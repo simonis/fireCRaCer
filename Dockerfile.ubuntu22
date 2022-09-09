@@ -1,0 +1,52 @@
+FROM ubuntu:22.04 as base
+RUN apt-get update
+
+FROM base as tools
+RUN apt-get update
+RUN apt-get install -y gcc
+WORKDIR /tools
+COPY /tools/fc_log_timestamp.c /tools/virt2phys.c ./
+RUN gcc -o fc_log_timestamp fc_log_timestamp.c
+RUN gcc -o virt2phys virt2phys.c
+
+FROM base as deps
+RUN apt-get update --fix-missing
+RUN apt-get install -y maven binutils git --no-install-recommends
+RUN mvn -version
+WORKDIR /deps
+#RUN wget https://github.com/org-crac/criu/releases/tag/release-crac/criu-dist.tar.gz
+#RUN tar -xzf criu-dist.tar.gz
+COPY /deps/jdk jdk-base
+RUN ./jdk-base/bin/jlink --add-modules ALL-MODULE-PATH --output jdk --strip-debug --no-man-pages --no-header-files --compress=2
+RUN git clone https://github.com/spring-projects/spring-petclinic.git
+WORKDIR spring-petclinic
+RUN mvn clean package
+
+FROM base
+RUN apt-get install -y iproute2 openssh-server vim-tiny --no-install-recommends
+
+RUN adduser --disabled-password --gecos "CRaC testing" crac
+RUN usermod -p `perl -e 'print crypt("crac1234", "salt"),"\n"'` crac
+RUN usermod -p `perl -e 'print crypt("root1234", "salt"),"\n"'` root
+RUN mkdir -p /root/.ssh
+COPY /docker/firecracker_id_rsa.pub /root/.ssh/authorized_keys
+RUN chmod -R go= /root/.ssh
+RUN cp -r  /root/.ssh /home/crac/
+RUN chown -R crac:crac /home/crac/.ssh
+# Required to start sshd
+RUN mkdir -p /run/sshd
+
+COPY --from=deps --chown=crac:crac /deps/jdk /opt/jdk
+#COPY --from=deps /deps/criu-dist/sbin/criu/criu /opt/jdk/lib/criu/
+#RUN sudo chown root:root /opt/jdk/lib/criu
+#RUN chmod u+s /opt/jdk/lib/criu
+COPY --from=deps --chown=crac:crac /deps/spring-petclinic/target/spring-petclinic-*.jar /opt/jars/
+COPY --chown=crac:crac /tools/crac_init.sh /opt/tools/
+COPY --chown=crac:crac /tools/ro_init.sh /opt/tools/
+COPY --chown=crac:crac /tools/get_maps.sh /opt/tools/
+COPY --from=tools --chown=crac:crac /tools/virt2phys /opt/tools/
+COPY --from=tools --chown=crac:crac /tools/fc_log_timestamp /opt/tools/
+
+# The following two directories are required in order to mount this root file system
+# read-only and overlay it with a writeable overlay file system (see ro_init.sh)
+RUN mkdir /rom /overlay

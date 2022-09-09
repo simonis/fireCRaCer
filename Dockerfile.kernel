@@ -1,0 +1,23 @@
+FROM ubuntu:18.04 as base
+RUN apt-get update
+
+FROM base as kernel
+RUN apt-get update
+RUN apt-get install -y wget bc build-essential libncurses-dev bison flex libssl-dev libelf-dev openssl --no-install-recommends
+
+ARG KERNEL=https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.19.8.tar.xz
+ARG KERNEL_CONFIG=https://raw.githubusercontent.com/firecracker-microvm/firecracker/main/resources/guest_configs/microvm-kernel-x86_64-5.10.config
+
+WORKDIR /kernel
+RUN wget --no-check-certificate -O kernel.tar.xz $KERNEL
+RUN tar -xf kernel.tar.xz
+RUN ln -s linux-* linux
+WORKDIR linux
+RUN wget --no-check-certificate -O KERNEL_CONFIG $KERNEL_CONFIG
+RUN cp KERNEL_CONFIG .config
+RUN pwd && ls -la
+RUN make olddefconfig
+RUN make vmlinux
+
+FROM base
+COPY --from=kernel /kernel/linux/vmlinux /opt/
