@@ -89,3 +89,16 @@ docker_id=$(docker run -it --rm --detach $DOCKER_IMG)
 # Need to use tar when copying files from container in order to preserve uid:gid of original files
 docker cp --archive $docker_id:/ - | sudo tar -xf - --same-owner -C $MOUNT_DIR
 docker kill $docker_id
+
+if [[ ! -f "$MYPATH/deps/uffd_handler" ]]; then
+  docker run --rm \
+         -v $MYPATH/deps:/output \
+         -v "$MYPATH/tools/uffd":/usr/src/myapp \
+         -w /usr/src/myapp rust:1.52.1 \
+         /bin/bash -c "
+           apt-get update;
+           apt-get install -y libclang-dev --no-install-recommends;
+           cargo build --release --bin uffd_handler --target-dir /tmp/cargo_target_dir;
+           cp /tmp/cargo_target_dir/release/uffd_handler /output;
+           chown $(id -u):$(id -g) /output/uffd_handler"
+fi
