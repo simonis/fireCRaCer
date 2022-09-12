@@ -136,7 +136,7 @@ DISABLE_I8042="i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd"
 # See: https://github.com/firecracker-microvm/firecracker-demo/blob/main/start-firecracker.sh
 FAST_ARGS="tsc=reliable ipv6.disable=1 nomodules randomize_kstack_offset=n norandmaps mitigations=off $NO_SERIAL"
 MISC_ARGS="console=ttyS0 reboot=k panic=1 pci=off"
-FS_ARGS="overlay_root=$OVERLAY_ROOT overlay_size=TEMPFS_SIZE"
+FS_ARGS="overlay_root=$OVERLAY_ROOT overlay_size=$TEMPFS_SIZE"
 # Notice: /opt/tools/ro_init.sh has to be present in the root file system image
 BOOT_ARGS="$MISC_ARGS $DISABLE_I8042 $FAST_ARGS $FS_ARGS ip=$IP_SETTINGS init=/opt/tools/ro_init.sh $BOOT_ARGS"
 

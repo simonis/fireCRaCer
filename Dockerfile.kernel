@@ -15,8 +15,10 @@ RUN ln -s linux-* linux
 WORKDIR linux
 RUN wget --no-check-certificate -O KERNEL_CONFIG $KERNEL_CONFIG
 RUN cp KERNEL_CONFIG .config
-RUN pwd && ls -la
 RUN make olddefconfig
+# Enable DAMON*, PAGE_IDLE_FLAG, IDLE_PAGE_TRACKING, ANON_VMA_NAME
+COPY /docker/config.damon.patch .
+RUN patch .config < config.damon.patch
 RUN make vmlinux
 
 FROM base

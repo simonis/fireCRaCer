@@ -77,7 +77,16 @@ do_overlay() {
 
 do_overlay
 
-init_script=${init_script:-'/bin/bash'}
+if [[ -n "$sshd" && ( "$sshd" == "true" || "$sshd" == "on" || "$sshd" == "1" ) ]]; then
+  # Start ssh daemon for debugging
+  echo "Starting ssh daemon" > /dev/kmsg
+  # Also mount the devpts file system such that sshd can assign pseudo terminals (PTYs).
+  mkdir -p /dev/pts
+  mount -t devpts devpts /dev/pts
+  /sbin/sshd
+fi
+
+init_script=${init_script:-'/opt/tools/crac_init.sh'}
 
 echo "Successfully overlayed read-only rootfs with /dev/$overlay_root" > /dev/kmsg
 echo "Now starting $init_script $@" > /dev/kmsg
