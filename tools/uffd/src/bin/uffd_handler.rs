@@ -7,11 +7,43 @@
 
 use nix::poll::{poll, PollFd, PollFlags};
 use std::os::unix::io::AsRawFd;
+use std::error::Error;
+use getopt::Opt;
 
 use uffd::uffd_utils::{create_pf_handler, MemPageState};
 
-fn main() {
-    let mut uffd_handler = create_pf_handler();
+fn help() {
+    println!("Usage: {} [-v] [-h] <socket-path> <memory-file>", std::env::args().nth(0).expect("Must be"));
+    println!(" <socket-path>: path which will be used to create domain socket for communication");
+    println!("                with the firecracker process. Must not exist (will be created).");
+    println!(" <memory-file>: the memory file created by a previous firecracker snapshot operation.");
+    println!(" -v           : produce more verbose output.");
+    println!(" -h           : print this usage information.");
+    std::process::exit(0);
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let mut args: Vec<String> = std::env::args().collect();
+    if std::env::args().len() <= 1 {
+        help();
+    }
+    let mut opts = getopt::Parser::new(&args, "vh");
+
+    let mut verbose = false;
+    loop {
+        match opts.next().transpose()? {
+            None => break,
+            Some(opt) => match opt {
+                Opt('v', None) => verbose = true,
+                Opt('h', None) => help(),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    let args = args.split_off(opts.index());
+
+    let mut uffd_handler = create_pf_handler(args, verbose);
 
     let pollfd = PollFd::new(uffd_handler.uffd.as_raw_fd(), PollFlags::POLLIN);
 

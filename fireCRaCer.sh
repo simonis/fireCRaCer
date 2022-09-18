@@ -15,6 +15,11 @@ MYPATH=$(dirname $(realpath -s $0))
 # sudo ip addr add 172.16.0.1/24 dev tap1
 # sudo ip link set tap1 up
 
+KERNEL=${KERNEL:-"$MYPATH/deps/vmlinux"}
+IMAGE=${IMAGE:-"$MYPATH/deps/rootfs.ext4"}
+UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
+
+TAP_DEVICE=${TAP_DEVICE:-'tap0'}
 
 while getopts 'lmns:r:i:ukh?' opt; do
   case "$opt" in
@@ -58,12 +63,14 @@ while getopts 'lmns:r:i:ukh?' opt; do
       echo " -n: Disable serial devices (i.e 8250.nr_uarts=0)."
       echo "     This saves ~100ms boot time but will disable the boot console."
       echo ""
-      echo " -s: snapshot Firecracker on tap device '${TAP_DEVICE:-tap0}' to <snapshot-dir>."
+      echo " -s: snapshot Firecracker on tap device '$TAP_DEVICE' to <snapshot-dir>."
       echo "     If <snapshot-dir> doesn't exist, it will be created."
-      echo " -r: restore Firecracker snapshot on tap device '${TAP_DEVICE:-tap0}' from <snapshot-dir>."
-      echo " -k: send Firecracker guest on tap device '${TAP_DEVICE:-tap0}' CtrlAltDel message (i.e. shut it down)."
+      echo " -r: restore Firecracker snapshot on tap device '$TAP_DEVICE' from <snapshot-dir>."
+      echo " -k: send Firecracker guest on tap device '$TAP_DEVICE' CtrlAltDel message (i.e. shut it down)."
       echo " -u: run with a userfaultfd memory backend and redirect its output to <log-file>"
-      echo "     (defaults to '/tmp/fireCRaCer-uffd-${TAP_DEVICE:-tap0}.log')."
+      echo "     (defaults to '/tmp/fireCRaCer-uffd-$TAP_DEVICE.log')."
+      echo "     The userfaultfd is started from UFFD_HANDLER (defaults to '$UFFD_HANDLER')."
+      echo "     Options can be passed to userfaultfd by setting UFFD_OPTS."
       exit 1
       ;;
   esac
@@ -75,12 +82,6 @@ if [[ ! -r /dev/kvm ]]; then
   echo "running: setfacl -m u:${USER}:rw /dev/kvm"
   sudo setfacl -m u:${USER}:rw /dev/kvm
 fi
-
-KERNEL=${KERNEL:-"$MYPATH/deps/vmlinux"}
-IMAGE=${IMAGE:-"$MYPATH/deps/rootfs.ext4"}
-UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
-
-TAP_DEVICE=${TAP_DEVICE:-'tap0'}
 
 TAP_DEVICE_NR=`echo $TAP_DEVICE | grep -oP '^tap[0-9]{1,3}$' | grep -oP '[0-9]{1,3}$'`
 if [[ "x$TAP_DEVICE_NR" == "x" ]]; then
@@ -158,7 +159,7 @@ if [[ -v SNAPSHOT ]]; then
              -X PUT 'http://localhost/snapshot/create' \
              -H 'Accept: application/json' \
              -H 'Content-Type: application/json' \
-             -d "{ \"snapshot_type\": \"Full\", \
+             -d "{ \"snapshot_type\": \"Diff\", \
                    \"snapshot_path\": \"$SNAPSHOT/snapshot_file\", \
                    \"mem_file_path\": \"$SNAPSHOT/mem_file\", \
                    \"version\": \"1.0.0\" }")
@@ -213,10 +214,14 @@ if [[ -v RESTORE ]]; then
     if [[ $USERFAULTFD = "1" ]]; then
       USERFAULTFD="/tmp/fireCRaCer-uffd-${TAP_DEVICE:-tap0}.log"
     fi
+    if [ ! -f "$UFFD_HANDLER" ]; then
+      echo "Error: can't access userfaultfd daemon at $UFFD_HANDLER"
+      exit 1
+    fi
     UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-$TAP_DEVICE.socket"}
     rm -f $UFFD_SOCKET
-    echo "Running: $UFFD_HANDLER $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1"
-    $UFFD_HANDLER $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1 &
+    echo "Running: $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1"
+    $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1 &
     # Kill uffd handler on exit
     trap 'kill $(jobs -p)' EXIT
     BACKEND_PATH=$UFFD_SOCKET

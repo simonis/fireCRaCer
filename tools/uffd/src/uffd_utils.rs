@@ -249,19 +249,21 @@ fn segment_cmp(segment: &Segment, address: u64) -> Ordering {
     return Equal;
 }
 
-pub fn create_pf_handler() -> UffdPfHandler {
-    let uffd_sock_path = std::env::args().nth(1).expect("No socket path given");
-    let mem_file_path = std::env::args().nth(2).expect("No memory file given");
+pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
+    let uffd_sock_path = args.get(0).expect("No socket path given");
+    let mem_file_path = args.get(1).expect("No memory file given");
 
     let mut file = File::open(mem_file_path.clone()).expect("Cannot open memfile");
     let size = file.metadata().unwrap().len() as usize;
 
-    let segments = file.scan_chunks().expect("Unable to scan chunks");
-    for segment in &segments {
-        println!("{:?}", segment);
+    if verbose {
+        let segments = file.scan_chunks().expect("Unable to scan chunks");
+        for segment in &segments {
+            println!("{:?}", segment);
+        }
+        // let index = segments.binary_search_by(|s| segment_cmp(&s, 131072)).expect("Segment not found");
+        // println!("{:?}", segments[index]);
     }
-    let index = segments.binary_search_by(|s| segment_cmp(&s, 131072)).expect("Segment not found");
-    println!("{:?}", segments[index]);
 
     // mmap a memory area used to bring in the faulting regions.
     let memfile_buffer = unsafe {
