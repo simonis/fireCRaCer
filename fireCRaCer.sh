@@ -31,7 +31,14 @@ while getopts 'lmns:r:i:ukh?' opt; do
       RESTORE="$OPTARG"
       ;;
     u)
-      USERFAULTFD=1
+      nextopt=${!OPTIND}
+      # existing or starting with dash?
+      if [[ -n $nextopt && $nextopt != -* ]] ; then
+        OPTIND=$((OPTIND + 1))
+        USERFAULTFD=$nextopt
+      else
+        USERFAULTFD=1
+      fi
       ;;
     n)
       NO_SERIAL="8250.nr_uarts=0"
@@ -43,7 +50,7 @@ while getopts 'lmns:r:i:ukh?' opt; do
       KILL=1
       ;;
     ?|h)
-      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-n]] [-s <snapshot-dir>] [-r <snapshot-dir> [-l] [-u]]"
+      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-n]] [-s <snapshot-dir>] [-r <snapshot-dir> [-l] [-u [<log-file>]]]"
       echo " -i <rw-image>: a file or device which will be used as read/write overlay for the root file system."
       echo "                By default a ram disk of TEMPFS_SIZE will be used."
       echo " -l: enable Firecracker logging to LOG_PATH with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
@@ -51,10 +58,12 @@ while getopts 'lmns:r:i:ukh?' opt; do
       echo " -n: Disable serial devices (i.e 8250.nr_uarts=0)."
       echo "     This saves ~100ms boot time but will disable the boot console."
       echo ""
-      echo " -s: snapshot Firecracker on tap device ${TAP_DEVICE:-'tap0'} to <snapshot-dir>."
+      echo " -s: snapshot Firecracker on tap device '${TAP_DEVICE:-tap0}' to <snapshot-dir>."
       echo "     If <snapshot-dir> doesn't exist, it will be created."
-      echo " -r: restore Firecracker snapshot on tap device ${TAP_DEVICE:-'tap0'} from <snapshot-dir>."
-      echo " -k: send Firecracker guest on tap device ${TAP_DEVICE:-'tap0'} CtrlAltDel message (i.e. shut it down)."
+      echo " -r: restore Firecracker snapshot on tap device '${TAP_DEVICE:-tap0}' from <snapshot-dir>."
+      echo " -k: send Firecracker guest on tap device '${TAP_DEVICE:-tap0}' CtrlAltDel message (i.e. shut it down)."
+      echo " -u: run with a userfaultfd memory backend and redirect its output to <log-file>"
+      echo "     (defaults to '/tmp/fireCRaCer-uffd-${TAP_DEVICE:-tap0}.log')."
       exit 1
       ;;
   esac
@@ -69,6 +78,7 @@ fi
 
 KERNEL=${KERNEL:-"$MYPATH/deps/vmlinux"}
 IMAGE=${IMAGE:-"$MYPATH/deps/rootfs.ext4"}
+UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
 
 TAP_DEVICE=${TAP_DEVICE:-'tap0'}
 
@@ -199,9 +209,30 @@ if [[ -v RESTORE ]]; then
     echo "Error: can't access snapshot directory $RESTORE"
     exit 1
   fi
+  if [[ -v USERFAULTFD ]]; then
+    if [[ $USERFAULTFD = "1" ]]; then
+      USERFAULTFD="/tmp/fireCRaCer-uffd-${TAP_DEVICE:-tap0}.log"
+    fi
+    UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-$TAP_DEVICE.socket"}
+    rm -f $UFFD_SOCKET
+    echo "Running: $UFFD_HANDLER $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1"
+    $UFFD_HANDLER $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1 &
+    # Kill uffd handler on exit
+    trap 'kill $(jobs -p)' EXIT
+    BACKEND_PATH=$UFFD_SOCKET
+    BACKEND_TYPE="Uffd"
+  else
+    BACKEND_PATH="$RESTORE/mem_file"
+    BACKEND_TYPE="File"
+  fi
   rm -f $FC_SOCKET
   echo "Running: firecracker --boot-timer --api-sock $FC_SOCKET $LOGGER"
-  firecracker --boot-timer --api-sock $FC_SOCKET $LOGGER &
+  # Enable job control
+  set -m
+  # Have to redirect stdin because firecracker wants to set stdin to raw mode
+  # and this will not work if job control is anbled (i.e. firecracker
+  # will receive a SIGTTIN/SIGTTOU signal and block).
+  firecracker --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
   ret=$(curl --write-out '%{http_code}' \
              --silent \
              --output /dev/null \
@@ -211,12 +242,14 @@ if [[ -v RESTORE ]]; then
              -H  'Content-Type: application/json' \
              -d "{ \"snapshot_path\": \"$RESTORE/snapshot_file\", \
                    \"mem_backend\": { \
-                     \"backend_path\": \"$RESTORE/mem_file\", \
-                     \"backend_type\": \"File\" \
+                     \"backend_path\": \"$BACKEND_PATH\", \
+                     \"backend_type\": \"$BACKEND_TYPE\" \
                    }, \
                    \"enable_diff_snapshots\": true, \
                    \"resume_vm\": true }")
   check_http_response $ret  "204" "Restore"
+  # Bring the firecracker process into the forground
+  fg %fire > /dev/null
   exit 0
 fi
 
@@ -264,7 +297,7 @@ BOOT_ARGS="$MISC_ARGS $DISABLE_I8042 $FAST_ARGS $FS_ARGS ip=$IP_SETTINGS init=/o
 
 CONFIG_FILE=$(mktemp --tmpdir 'vmconfig.XXXXXX')
 # Delete CONFIG_FILE on exit
-#trap '{ rm -f -- "$CONFIG_FILE"; }' EXIT
+trap '{ rm -f -- "$CONFIG_FILE"; }' EXIT
 
 cat <<EOF > $CONFIG_FILE
 {
