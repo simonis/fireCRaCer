@@ -240,6 +240,7 @@ if [[ -v RESTORE ]]; then
   # and this will not work if job control is anbled (i.e. firecracker
   # will receive a SIGTTIN/SIGTTOU signal and block).
   $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
+  sleep 1
   ret=$(curl --write-out '%{http_code}' \
              --silent \
              --output /dev/null \

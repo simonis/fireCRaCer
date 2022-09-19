@@ -56,6 +56,11 @@ struct MemRegion {
     page_states: HashMap<u64, MemPageState>,
 }
 
+struct MemSegments {
+    mapping: GuestRegionUffdMapping,
+    mem_segments: Vec<Segment>,
+}
+
 pub struct UffdPfHandler {
     mem_regions: Vec<MemRegion>,
     backing_buffer: *const u8,
@@ -63,6 +68,7 @@ pub struct UffdPfHandler {
     // Not currently used but included to demonstrate how a page fault handler can
     // fetch Firecracker's PID in order to make it aware of any crashes/exits.
     firecracker_pid: u32,
+    mem_segments: Vec<MemSegments>,
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +80,7 @@ pub enum MemPageState {
 }
 
 impl UffdPfHandler {
-    pub fn from_unix_stream(stream: UnixStream, data: *const u8, size: usize) -> Self {
+    pub fn from_unix_stream(stream: UnixStream, data: *const u8, size: usize, mem_segments: Vec<Segment>) -> Self {
         let mut message_buf = vec![0u8; 1024];
         let (bytes_read, file) = stream
             .recv_with_fd(&mut message_buf[..])
@@ -96,6 +102,7 @@ impl UffdPfHandler {
         let creds: libc::ucred = get_peer_process_credentials(stream);
 
         let mem_regions = create_mem_regions(&mappings);
+        let mem_segments = create_mem_segments(&mappings, mem_segments);
 
         println!("Connected to PID {}", creds.pid as u32);
 
@@ -104,6 +111,7 @@ impl UffdPfHandler {
             backing_buffer: data,
             uffd,
             firecracker_pid: creds.pid as u32,
+            mem_segments,
         }
     }
 
@@ -136,30 +144,44 @@ impl UffdPfHandler {
         return (page_addr, page_addr + len as u64);
     }
 
-    fn zero_out(&mut self, addr: u64) -> (u64, u64) {
-        let page_size = *PAGE_SIZE;
-
+    fn populate_from_file_segment(&self, region: &MemSegments, page_addr: u64) {
+        let src = self.backing_buffer as u64 + region.mapping.offset + page_addr - region.mapping.base_host_virt_addr;
+        // Populate a single page from backing mem-file.
+        println!("Populating 0x{:x} - 0x{:x} in PID {} from 0x{:x} - 0x{:x}",
+                 page_addr, page_addr + *PAGE_SIZE as u64, self.firecracker_pid, src, src + *PAGE_SIZE as u64);
         let ret = unsafe {
             self.uffd
-                .zeropage(addr as *mut _, page_size, true)
+                .copy(src as *const _, page_addr as *mut _, *PAGE_SIZE, true)
+                .expect("Uffd copy failed")
+        };
+
+        // Make sure the UFFD copied some bytes.
+        assert!(ret > 0);
+    }
+
+    fn zero_out(&self, addr: u64) -> (u64, u64) {
+        println!("Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + *PAGE_SIZE as u64, self.firecracker_pid);
+        let ret = unsafe {
+            self.uffd
+                .zeropage(addr as *mut _, *PAGE_SIZE, true)
                 .expect("Uffd zeropage failed")
         };
         // Make sure the UFFD zeroed out some bytes.
         assert!(ret > 0);
 
-        println!("Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + page_size as u64, self.firecracker_pid);
-
-        return (addr, addr + page_size as u64);
+        return (addr, addr + *PAGE_SIZE as u64);
     }
 
-    pub fn serve_pf(&mut self, addr: *mut u8, thread_id: Pid) {
-        let page_size = *PAGE_SIZE;
-
+    // We don't use _thread_id for now. First, it requires a patched version of Firecracker which sets
+    // the 'UFFD_FEATURE_THREAD_ID' feature (i.e. 'uffd_builder.require_features(FeatureFlags::THREAD_ID)').
+    // Second, the thread IDs are not meaningfull if the process which generates the page faults is a KVM
+    // container like firecracker, because the thread guests are not visible on the host.
+    pub fn serve_pf(&mut self, addr: *mut u8, _thread_id: Pid) {
         // Find the start of the page that the current faulting address belongs to.
-        let dst = (addr as usize & !(page_size as usize - 1)) as *mut c_void;
+        let dst = (addr as usize & !(*PAGE_SIZE as usize - 1)) as *mut c_void;
         let fault_page_addr = dst as u64;
-        println!("Page fault from TID {} at address {:x}, page {:x}", thread_id, addr as u64, fault_page_addr);
-
+        println!("Page fault at address {:x}, page {:x}", addr as u64, fault_page_addr);
+        /*
         // Get the state of the current faulting page.
         for region in self.mem_regions.iter() {
             match region.page_states.get(&fault_page_addr) {
@@ -186,7 +208,18 @@ impl UffdPfHandler {
                 }
             }
         }
-
+        */
+        for region in self.mem_segments.iter() {
+            let guest_addr = region.mapping.offset + fault_page_addr - region.mapping.base_host_virt_addr;
+            let index = region.mem_segments.binary_search_by(|s| segment_cmp(&s, guest_addr as u64)).expect("Segment not found");
+            if region.mem_segments[index].is_data() {
+                self.populate_from_file_segment(region, fault_page_addr);
+            }
+            else {
+                self.zero_out(fault_page_addr);
+            }
+            return;
+        }
         panic!(
             "Could not find addr: {:?} within guest region mappings.",
             addr
@@ -219,7 +252,6 @@ fn get_peer_process_credentials(stream: UnixStream) -> libc::ucred {
 }
 
 fn create_mem_regions(mappings: &Vec<GuestRegionUffdMapping>) -> Vec<MemRegion> {
-    let page_size = *PAGE_SIZE;
     let mut mem_regions: Vec<MemRegion> = Vec::with_capacity(mappings.len());
 
     for r in mappings.iter() {
@@ -231,7 +263,7 @@ fn create_mem_regions(mappings: &Vec<GuestRegionUffdMapping>) -> Vec<MemRegion> 
 
         while addr < end_addr {
             page_states.insert(addr, MemPageState::Uninitialized);
-            addr += page_size as u64;
+            addr += *PAGE_SIZE as u64;
         }
         mem_regions.push(MemRegion {
             mapping,
@@ -242,8 +274,24 @@ fn create_mem_regions(mappings: &Vec<GuestRegionUffdMapping>) -> Vec<MemRegion> 
     mem_regions
 }
 
+fn create_mem_segments(mappings: &Vec<GuestRegionUffdMapping>, segments: Vec<Segment>) -> Vec<MemSegments> {
+    let mut mem_segments: Vec<MemSegments> = Vec::with_capacity(mappings.len());
+
+    for r in mappings.iter() {
+        println!("Create MemSegments for mapping {:?}", r);
+        let mapping = r.clone();
+
+        mem_segments.push(MemSegments {
+            mapping,
+            mem_segments: segments.clone(),
+        });
+    }
+
+    mem_segments
+}
+
 fn segment_cmp(segment: &Segment, address: u64) -> Ordering {
-    println!("==> {:?} {}", segment, address);
+    // println!("==> {:?} {}", segment, address);
     if address < segment.start {
         return Greater;
     }
@@ -265,8 +313,6 @@ pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
         for segment in &segments {
             println!("{:?}", segment);
         }
-        // let index = segments.binary_search_by(|s| segment_cmp(&s, 131072)).expect("Segment not found");
-        // println!("{:?}", segments[index]);
     }
 
     // mmap a memory area used to bring in the faulting regions.
@@ -290,5 +336,5 @@ pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
     println!("Mapping memory file {} to address 0x{:x}-0x{:x}, size = {}",
              mem_file_path, memfile_buffer as u64, memfile_buffer as u64 + size as u64, size);
 
-    UffdPfHandler::from_unix_stream(stream, memfile_buffer, size)
+    UffdPfHandler::from_unix_stream(stream, memfile_buffer, size, segments)
 }

@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         // See what poll() tells us about the userfaultfd.
         let nready = poll(&mut [pollfd], -1).expect("Failed to poll");
-
+        /*
         let revents = pollfd.revents().unwrap();
         println!(
             "poll() returns: nready = {}; POLLIN = {}; POLLERR = {}",
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             revents.contains(PollFlags::POLLIN),
             revents.contains(PollFlags::POLLERR),
         );
-
+        */
         // Read an event from the userfaultfd.
         let event = uffd_handler
             .uffd
@@ -67,7 +67,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .expect("Failed to read uffd_msg")
             .expect("uffd_msg not ready");
 
-        println!("Reading event {:?} from uffd", event);
+        if verbose {
+            println!("Reading event {:?} from uffd", event);
+        }
 
         // We expect to receive either a Page Fault or Removed
         // event (if the balloon device is enabled).
