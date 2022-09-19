@@ -6,18 +6,20 @@ use std::fs::File;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::{mem, ptr};
+use std::cmp::Ordering;
+use std::cmp::Ordering::{Less, Equal, Greater};
 
 use libc::c_void;
 use nix::sys::mman::{mmap, MapFlags, ProtFlags};
+use nix::unistd::Pid;
 use serde::Deserialize;
 use userfaultfd::Uffd;
+use lazy_static::lazy_static;
 
 use vmm_sys_util::errno;
 use vmm_sys_util::sock_ctrl_msg::ScmSocket;
 
 use hole_punch::*;
-use std::cmp::Ordering;
-use std::cmp::Ordering::{Less, Equal, Greater};
 
 /// Return the default page size of the platform, in bytes.
 fn get_page_size() -> Result<usize, errno::Error> {
@@ -25,6 +27,10 @@ fn get_page_size() -> Result<usize, errno::Error> {
         -1 => Err(errno::Error::last()),
         ps => Ok(ps as usize),
     }
+}
+
+lazy_static! {
+    static ref PAGE_SIZE: usize = get_page_size().unwrap();
 }
 
 // This is the same with the one used in src/vmm.
@@ -56,7 +62,7 @@ pub struct UffdPfHandler {
     pub uffd: Uffd,
     // Not currently used but included to demonstrate how a page fault handler can
     // fetch Firecracker's PID in order to make it aware of any crashes/exits.
-    _firecracker_pid: u32,
+    firecracker_pid: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -97,7 +103,7 @@ impl UffdPfHandler {
             mem_regions,
             backing_buffer: data,
             uffd,
-            _firecracker_pid: creds.pid as u32,
+            firecracker_pid: creds.pid as u32,
         }
     }
 
@@ -114,12 +120,10 @@ impl UffdPfHandler {
 
     fn populate_from_file(&self, region: &MemRegion, page_addr: u64) -> (u64, u64) {
         let src = self.backing_buffer as u64 + region.mapping.offset + page_addr - region.mapping.base_host_virt_addr;
-        let len = get_page_size().unwrap();
-        // Populate whole region from backing mem-file.
-        // This offers an example of how memory can be loaded in RAM,
-        // however this can be adjusted to accommodate use case needs.
+        let len = *PAGE_SIZE;
+        // Populate a single page from backing mem-file.
         println!("Populating 0x{:x} - 0x{:x} in PID {} from 0x{:x} - 0x{:x}",
-                 page_addr, page_addr + len as u64, self._firecracker_pid, src, src + len as u64);
+                 page_addr, page_addr + len as u64, self.firecracker_pid, src, src + len as u64);
         let ret = unsafe {
             self.uffd
                 .copy(src as *const _, page_addr as *mut _, len, true)
@@ -133,7 +137,7 @@ impl UffdPfHandler {
     }
 
     fn zero_out(&mut self, addr: u64) -> (u64, u64) {
-        let page_size = get_page_size().unwrap();
+        let page_size = *PAGE_SIZE;
 
         let ret = unsafe {
             self.uffd
@@ -143,18 +147,18 @@ impl UffdPfHandler {
         // Make sure the UFFD zeroed out some bytes.
         assert!(ret > 0);
 
-        println!("Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + page_size as u64, self._firecracker_pid);
+        println!("Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + page_size as u64, self.firecracker_pid);
 
         return (addr, addr + page_size as u64);
     }
 
-    pub fn serve_pf(&mut self, addr: *mut u8) {
-        let page_size = get_page_size().unwrap();
+    pub fn serve_pf(&mut self, addr: *mut u8, thread_id: Pid) {
+        let page_size = *PAGE_SIZE;
 
         // Find the start of the page that the current faulting address belongs to.
         let dst = (addr as usize & !(page_size as usize - 1)) as *mut c_void;
         let fault_page_addr = dst as u64;
-        println!("Page fault at address {:x}, page {:x}", addr as u64, fault_page_addr);
+        println!("Page fault from TID {} at address {:x}, page {:x}", thread_id, addr as u64, fault_page_addr);
 
         // Get the state of the current faulting page.
         for region in self.mem_regions.iter() {
@@ -215,7 +219,7 @@ fn get_peer_process_credentials(stream: UnixStream) -> libc::ucred {
 }
 
 fn create_mem_regions(mappings: &Vec<GuestRegionUffdMapping>) -> Vec<MemRegion> {
-    let page_size = get_page_size().unwrap();
+    let page_size = *PAGE_SIZE;
     let mut mem_regions: Vec<MemRegion> = Vec::with_capacity(mappings.len());
 
     for r in mappings.iter() {
@@ -256,8 +260,8 @@ pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
     let mut file = File::open(mem_file_path.clone()).expect("Cannot open memfile");
     let size = file.metadata().unwrap().len() as usize;
 
+    let segments = file.scan_chunks().expect("Unable to scan chunks");
     if verbose {
-        let segments = file.scan_chunks().expect("Unable to scan chunks");
         for segment in &segments {
             println!("{:?}", segment);
         }

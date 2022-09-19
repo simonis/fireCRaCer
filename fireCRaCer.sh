@@ -15,6 +15,8 @@ MYPATH=$(dirname $(realpath -s $0))
 # sudo ip addr add 172.16.0.1/24 dev tap1
 # sudo ip link set tap1 up
 
+FIRECRACKER=${FIRECRACKER:-"firecracker"}
+
 KERNEL=${KERNEL:-"$MYPATH/deps/vmlinux"}
 IMAGE=${IMAGE:-"$MYPATH/deps/rootfs.ext4"}
 UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
@@ -231,13 +233,13 @@ if [[ -v RESTORE ]]; then
     BACKEND_TYPE="File"
   fi
   rm -f $FC_SOCKET
-  echo "Running: firecracker --boot-timer --api-sock $FC_SOCKET $LOGGER"
+  echo "Running: $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER"
   # Enable job control
   set -m
   # Have to redirect stdin because firecracker wants to set stdin to raw mode
   # and this will not work if job control is anbled (i.e. firecracker
   # will receive a SIGTTIN/SIGTTOU signal and block).
-  firecracker --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
+  $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
   ret=$(curl --write-out '%{http_code}' \
              --silent \
              --output /dev/null \
@@ -254,7 +256,7 @@ if [[ -v RESTORE ]]; then
                    \"resume_vm\": true }")
   check_http_response $ret  "204" "Restore"
   # Bring the firecracker process into the forground
-  fg %fire > /dev/null
+  fg %$FIRE > /dev/null
   exit 0
 fi
 
@@ -337,5 +339,5 @@ cat <<EOF > $CONFIG_FILE
 EOF
 
 rm -f $FC_SOCKET
-echo "Running: firecracker --boot-timer --api-sock $FC_SOCKET --config-file $CONFIG_FILE"
-firecracker --boot-timer --api-sock $FC_SOCKET --config-file $CONFIG_FILE
+echo "Running: $FIRECRACKER --boot-timer --api-sock $FC_SOCKET --config-file $CONFIG_FILE"
+$FIRECRACKER --boot-timer --api-sock $FC_SOCKET --config-file $CONFIG_FILE

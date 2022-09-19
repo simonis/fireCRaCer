@@ -94,7 +94,9 @@ if [[ ! -f "$MYPATH/deps/uffd_handler" ]]; then
   docker run --rm \
          -v $MYPATH/deps:/output \
          -v "$MYPATH/tools/uffd":/usr/src/myapp \
-         -w /usr/src/myapp rust:1.52.1 \
+         -w /usr/src/myapp \
+         -e RUSTFLAGS='--cfg feature="linux4_14" --cfg linux4_14' \
+         rust:1.52.1 \
          /bin/bash -c "
            apt-get update;
            apt-get install -y libclang-dev --no-install-recommends;
