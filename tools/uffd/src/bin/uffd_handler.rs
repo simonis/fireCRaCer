@@ -10,7 +10,7 @@ use std::os::unix::io::AsRawFd;
 use std::error::Error;
 use getopt::Opt;
 
-use uffd::uffd_utils::{create_pf_handler, MemPageState};
+use uffd::uffd_utils::{create_pf_handler};
 
 fn help() {
     println!("Usage: {} [-v] [-h] <socket-path> <memory-file>", std::env::args().nth(0).expect("Must be"));
@@ -50,16 +50,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Loop, handling incoming events on the userfaultfd file descriptor.
     loop {
         // See what poll() tells us about the userfaultfd.
-        let nready = poll(&mut [pollfd], -1).expect("Failed to poll");
-        /*
-        let revents = pollfd.revents().unwrap();
-        println!(
-            "poll() returns: nready = {}; POLLIN = {}; POLLERR = {}",
-            nready,
-            revents.contains(PollFlags::POLLIN),
-            revents.contains(PollFlags::POLLERR),
-        );
-        */
+        let _nready = poll(&mut [pollfd], -1).expect("Failed to poll");
+
         // Read an event from the userfaultfd.
         let event = uffd_handler
             .uffd
@@ -68,17 +60,19 @@ fn main() -> Result<(), Box<dyn Error>> {
             .expect("uffd_msg not ready");
 
         if verbose {
-            println!("Reading event {:?} from uffd", event);
+            // println!("Reading event {:?} from uffd", event);
         }
 
         // We expect to receive either a Page Fault or Removed
         // event (if the balloon device is enabled).
         match event {
-            userfaultfd::Event::Pagefault { addr, thread_id, .. } => uffd_handler.serve_pf(addr as *mut u8, thread_id),
-            userfaultfd::Event::Remove { start, end } => uffd_handler.update_mem_state_mappings(
+            userfaultfd::Event::Pagefault { addr, rw, thread_id, .. } => uffd_handler.serve_pf(
+                addr as *mut u8,
+                rw.eq(&userfaultfd::ReadWrite::Write),
+                thread_id),
+            userfaultfd::Event::Remove { start, end } => uffd_handler.serve_remove(
                 start as *mut u8 as u64,
                 end as *mut u8 as u64,
-                &MemPageState::Removed,
             ),
             _ => panic!("Unexpected event on userfaultfd"),
         }

@@ -38,7 +38,7 @@ void scan_pagemap(int pagemap, pid_t pid, unsigned long start, unsigned long end
       }
     }
     if (entry.present) {
-      printf("%lx %d %lx %d\n", (unsigned long)entry.pfn, pid, start, entry.exclusive);
+      printf("%lx %d %lx %d %d\n", (unsigned long)entry.pfn, pid, start, entry.exclusive, entry.file_shared);
     }
     start += PAGE_SIZE;
   }

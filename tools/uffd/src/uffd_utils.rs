@@ -1,7 +1,6 @@
 // Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -53,12 +52,6 @@ pub struct GuestRegionUffdMapping {
 
 struct MemRegion {
     mapping: GuestRegionUffdMapping,
-    page_states: HashMap<u64, MemPageState>,
-}
-
-struct MemSegments {
-    mapping: GuestRegionUffdMapping,
-    mem_segments: Vec<Segment>,
 }
 
 pub struct UffdPfHandler {
@@ -68,7 +61,7 @@ pub struct UffdPfHandler {
     // Not currently used but included to demonstrate how a page fault handler can
     // fetch Firecracker's PID in order to make it aware of any crashes/exits.
     firecracker_pid: u32,
-    mem_segments: Vec<MemSegments>,
+    mem_segments: Vec<Segment>,
 }
 
 #[derive(Clone, Debug)]
@@ -102,7 +95,6 @@ impl UffdPfHandler {
         let creds: libc::ucred = get_peer_process_credentials(stream);
 
         let mem_regions = create_mem_regions(&mappings);
-        let mem_segments = create_mem_segments(&mappings, mem_segments);
 
         println!("Connected to PID {}", creds.pid as u32);
 
@@ -115,43 +107,28 @@ impl UffdPfHandler {
         }
     }
 
-    pub fn update_mem_state_mappings(&mut self, start: u64, end: u64, state: &MemPageState) {
-        println!("Update mapping {:x} - {:x} {:?}", start, end, state);
-        for region in self.mem_regions.iter_mut() {
-            for (key, value) in region.page_states.iter_mut() {
-                if key >= &start && key < &end {
-                    *value = state.clone();
-                }
-            }
-        }
+    pub fn serve_remove(&mut self, start: u64, end: u64) {
+        // This is not really supported for now and I'm not sure how to do that.
+        // The problem is that UFFD_EVENT_REMOVE can be triggered by both,
+        // MADV_DONTNEED and MADV_REMOVE and there's no way to know it here.
+        // Even if we knew which one triggered the UFFD_EVENT_REMOVE event,
+        // we can't know if that was for shared mapping or a private mapping.
+        // For the first case we would have to bring in the orignal  or even updated
+        // memory content in that range, for the second one we could simply
+        // zero out the pages (as we should also do for MADV_REMOVE).
+        // By doing nothing here we basically fall back to always returning
+        // the original content from the backup file.
+        println!("UFFD_EVENT_REMOVE: {:x} - {:x}", start, end);
     }
 
-    fn populate_from_file(&self, region: &MemRegion, page_addr: u64) -> (u64, u64) {
-        let src = self.backing_buffer as u64 + region.mapping.offset + page_addr - region.mapping.base_host_virt_addr;
-        let len = *PAGE_SIZE;
+    fn populate_from_file(&self, host_virt_addr: u64, guest_phys_addr: u64) {
+        let src = self.backing_buffer as u64 + guest_phys_addr;
         // Populate a single page from backing mem-file.
-        println!("Populating 0x{:x} - 0x{:x} in PID {} from 0x{:x} - 0x{:x}",
-                 page_addr, page_addr + len as u64, self.firecracker_pid, src, src + len as u64);
+        println!("  Populating 0x{:x} - 0x{:x} in PID {} from 0x{:x} - 0x{:x}",
+                 host_virt_addr, host_virt_addr + *PAGE_SIZE as u64, self.firecracker_pid, src, src + *PAGE_SIZE as u64);
         let ret = unsafe {
             self.uffd
-                .copy(src as *const _, page_addr as *mut _, len, true)
-                .expect("Uffd copy failed")
-        };
-
-        // Make sure the UFFD copied some bytes.
-        assert!(ret > 0);
-
-        return (page_addr, page_addr + len as u64);
-    }
-
-    fn populate_from_file_segment(&self, region: &MemSegments, page_addr: u64) {
-        let src = self.backing_buffer as u64 + region.mapping.offset + page_addr - region.mapping.base_host_virt_addr;
-        // Populate a single page from backing mem-file.
-        println!("Populating 0x{:x} - 0x{:x} in PID {} from 0x{:x} - 0x{:x}",
-                 page_addr, page_addr + *PAGE_SIZE as u64, self.firecracker_pid, src, src + *PAGE_SIZE as u64);
-        let ret = unsafe {
-            self.uffd
-                .copy(src as *const _, page_addr as *mut _, *PAGE_SIZE, true)
+                .copy(src as *const _, host_virt_addr as *mut _, *PAGE_SIZE, true)
                 .expect("Uffd copy failed")
         };
 
@@ -160,7 +137,7 @@ impl UffdPfHandler {
     }
 
     fn zero_out(&self, addr: u64) -> (u64, u64) {
-        println!("Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + *PAGE_SIZE as u64, self.firecracker_pid);
+        println!("  Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + *PAGE_SIZE as u64, self.firecracker_pid);
         let ret = unsafe {
             self.uffd
                 .zeropage(addr as *mut _, *PAGE_SIZE, true)
@@ -176,49 +153,31 @@ impl UffdPfHandler {
     // the 'UFFD_FEATURE_THREAD_ID' feature (i.e. 'uffd_builder.require_features(FeatureFlags::THREAD_ID)').
     // Second, the thread IDs are not meaningfull if the process which generates the page faults is a KVM
     // container like firecracker, because the thread guests are not visible on the host.
-    pub fn serve_pf(&mut self, addr: *mut u8, _thread_id: Pid) {
+    pub fn serve_pf(&mut self, addr: *mut u8, write: bool, _thread_id: Pid) {
         // Find the start of the page that the current faulting address belongs to.
         let dst = (addr as usize & !(*PAGE_SIZE as usize - 1)) as *mut c_void;
         let fault_page_addr = dst as u64;
-        println!("Page fault at address {:x}, page {:x}", addr as u64, fault_page_addr);
-        /*
-        // Get the state of the current faulting page.
+        let access = if write {
+            "write"
+        } else {
+            "read"
+        }.to_string();
+        println!("UFFD_EVENT_PAGEFAULT ({}): {:x} (page address {:x})", access, addr as u64, fault_page_addr);
+
         for region in self.mem_regions.iter() {
-            match region.page_states.get(&fault_page_addr) {
-                // Our simple PF handler has a simple strategy:
-                // There exist 4 states in which a memory page can be in:
-                // 1. Uninitialized - page was never touched
-                // 2. FromFile - the page is populated with content from snapshotted memory file
-                // 3. Removed - MADV_DONTNEED was called due to balloon inflation
-                // 4. Anonymous - page was zeroed out -> this implies that more than one page fault
-                //    event was received. This can be a consequence of guest reclaiming back its
-                //    memory from the host (through balloon device)
-                Some(MemPageState::Uninitialized) | Some(MemPageState::FromFile) => {
-                    let (start, end) = self.populate_from_file(region, fault_page_addr);
-                    self.update_mem_state_mappings(start, end, &MemPageState::FromFile);
-                    return;
-                }
-                Some(MemPageState::Removed) | Some(MemPageState::Anonymous) => {
-                    let (start, end) = self.zero_out(fault_page_addr);
-                    self.update_mem_state_mappings(start, end, &MemPageState::Anonymous);
-                    return;
-                }
-                None => {
-                    ();
-                }
-            }
-        }
-        */
-        for region in self.mem_segments.iter() {
             let guest_addr = region.mapping.offset + fault_page_addr - region.mapping.base_host_virt_addr;
-            let index = region.mem_segments.binary_search_by(|s| segment_cmp(&s, guest_addr as u64)).expect("Segment not found");
-            if region.mem_segments[index].is_data() {
-                self.populate_from_file_segment(region, fault_page_addr);
+            let index = self.mem_segments.binary_search_by(|s| segment_cmp(&s, guest_addr as u64)).expect("Segment not found");
+            if self.mem_segments[index].is_data() {
+                self.populate_from_file(fault_page_addr, guest_addr);
+                return;
+            }
+            else if self.mem_segments[index].is_hole() {
+                self.zero_out(fault_page_addr);
+                return;
             }
             else {
-                self.zero_out(fault_page_addr);
+                // fault_page_addr not represented in this region
             }
-            return;
         }
         panic!(
             "Could not find addr: {:?} within guest region mappings.",
@@ -253,41 +212,16 @@ fn get_peer_process_credentials(stream: UnixStream) -> libc::ucred {
 
 fn create_mem_regions(mappings: &Vec<GuestRegionUffdMapping>) -> Vec<MemRegion> {
     let mut mem_regions: Vec<MemRegion> = Vec::with_capacity(mappings.len());
-
     for r in mappings.iter() {
         println!("Create MemRegions for mapping {:?}", r);
         let mapping = r.clone();
-        let mut addr = r.base_host_virt_addr;
-        let end_addr = r.base_host_virt_addr + r.size as u64;
-        let mut page_states = HashMap::new();
 
-        while addr < end_addr {
-            page_states.insert(addr, MemPageState::Uninitialized);
-            addr += *PAGE_SIZE as u64;
-        }
         mem_regions.push(MemRegion {
             mapping,
-            page_states,
         });
     }
 
     mem_regions
-}
-
-fn create_mem_segments(mappings: &Vec<GuestRegionUffdMapping>, segments: Vec<Segment>) -> Vec<MemSegments> {
-    let mut mem_segments: Vec<MemSegments> = Vec::with_capacity(mappings.len());
-
-    for r in mappings.iter() {
-        println!("Create MemSegments for mapping {:?}", r);
-        let mapping = r.clone();
-
-        mem_segments.push(MemSegments {
-            mapping,
-            mem_segments: segments.clone(),
-        });
-    }
-
-    mem_segments
 }
 
 fn segment_cmp(segment: &Segment, address: u64) -> Ordering {
