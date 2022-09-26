@@ -60,7 +60,7 @@ pub struct UffdPfHandler {
     pub uffd: Uffd,
     // Not currently used but included to demonstrate how a page fault handler can
     // fetch Firecracker's PID in order to make it aware of any crashes/exits.
-    firecracker_pid: u32,
+    _firecracker_pid: u32,
     mem_segments: Vec<Segment>,
 }
 
@@ -102,7 +102,7 @@ impl UffdPfHandler {
             mem_regions,
             backing_buffer: data,
             uffd,
-            firecracker_pid: creds.pid as u32,
+            _firecracker_pid: creds.pid as u32,
             mem_segments,
         }
     }
@@ -118,26 +118,24 @@ impl UffdPfHandler {
         // zero out the pages (as we should also do for MADV_REMOVE).
         // By doing nothing here we basically fall back to always returning
         // the original content from the backup file.
-        println!("UFFD_EVENT_REMOVE: {:x} - {:x}", start, end);
+        println!("UFFD_EVENT_REMOVE: {:#018x} - {:#018x}", start, end);
     }
 
     fn populate_from_file(&self, host_virt_addr: u64, guest_phys_addr: u64) {
         let src = self.backing_buffer as u64 + guest_phys_addr;
         // Populate a single page from backing mem-file.
-        println!("  Populating 0x{:x} - 0x{:x} in PID {} from 0x{:x} - 0x{:x}",
-                 host_virt_addr, host_virt_addr + *PAGE_SIZE as u64, self.firecracker_pid, src, src + *PAGE_SIZE as u64);
+        println!(" Loading: {:#018x} - {:#018x}", guest_phys_addr, guest_phys_addr + *PAGE_SIZE as u64);
         let ret = unsafe {
             self.uffd
                 .copy(src as *const _, host_virt_addr as *mut _, *PAGE_SIZE, true)
                 .expect("Uffd copy failed")
         };
-
         // Make sure the UFFD copied some bytes.
         assert!(ret > 0);
     }
 
-    fn zero_out(&self, addr: u64) -> (u64, u64) {
-        println!("  Zeroing 0x{:x} - 0x{:x} in PID {}", addr, addr + *PAGE_SIZE as u64, self.firecracker_pid);
+    fn zero_out(&self, addr: u64, guest_phys_addr: u64) {
+        println!(" Zeroing: {:#018x} - {:#018x}", guest_phys_addr, guest_phys_addr + *PAGE_SIZE as u64);
         let ret = unsafe {
             self.uffd
                 .zeropage(addr as *mut _, *PAGE_SIZE, true)
@@ -145,8 +143,6 @@ impl UffdPfHandler {
         };
         // Make sure the UFFD zeroed out some bytes.
         assert!(ret > 0);
-
-        return (addr, addr + *PAGE_SIZE as u64);
     }
 
     // We don't use _thread_id for now. First, it requires a patched version of Firecracker which sets
@@ -158,25 +154,25 @@ impl UffdPfHandler {
         let dst = (addr as usize & !(*PAGE_SIZE as usize - 1)) as *mut c_void;
         let fault_page_addr = dst as u64;
         let access = if write {
-            "write"
+            "w"
         } else {
-            "read"
+            "r"
         }.to_string();
-        println!("UFFD_EVENT_PAGEFAULT ({}): {:x} (page address {:x})", access, addr as u64, fault_page_addr);
+        print!("UFFD_EVENT_PAGEFAULT ({}): {:#018x} {:#018x} ", access, addr as u64, fault_page_addr);
 
         for region in self.mem_regions.iter() {
-            let guest_addr = region.mapping.offset + fault_page_addr - region.mapping.base_host_virt_addr;
-            let index = self.mem_segments.binary_search_by(|s| segment_cmp(&s, guest_addr as u64)).expect("Segment not found");
-            if self.mem_segments[index].is_data() {
-                self.populate_from_file(fault_page_addr, guest_addr);
+            if fault_page_addr >= region.mapping.base_host_virt_addr &&
+                fault_page_addr < region.mapping.base_host_virt_addr + region.mapping.size as u64 {
+
+                let guest_addr = region.mapping.offset + (fault_page_addr - region.mapping.base_host_virt_addr);
+
+                let index = self.mem_segments.binary_search_by(|s| segment_cmp(&s, guest_addr as u64)).expect("Segment not found");
+                if self.mem_segments[index].is_data() {
+                    self.populate_from_file(fault_page_addr, guest_addr);
+                } else {
+                    self.zero_out(fault_page_addr, guest_addr);
+                }
                 return;
-            }
-            else if self.mem_segments[index].is_hole() {
-                self.zero_out(fault_page_addr);
-                return;
-            }
-            else {
-                // fault_page_addr not represented in this region
             }
         }
         panic!(
@@ -242,13 +238,6 @@ pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
     let mut file = File::open(mem_file_path.clone()).expect("Cannot open memfile");
     let size = file.metadata().unwrap().len() as usize;
 
-    let segments = file.scan_chunks().expect("Unable to scan chunks");
-    if verbose {
-        for segment in &segments {
-            println!("{:?}", segment);
-        }
-    }
-
     // mmap a memory area used to bring in the faulting regions.
     let memfile_buffer = unsafe {
         mmap(
@@ -267,8 +256,15 @@ pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
 
     let (stream, _) = listener.accept().expect("Cannot listen on UDS socket");
 
-    println!("Mapping memory file {} to address 0x{:x}-0x{:x}, size = {}",
+    println!("Mapping memory file {} to address {:#018x} - {:#018x}, size = {}",
              mem_file_path, memfile_buffer as u64, memfile_buffer as u64 + size as u64, size);
+
+    let segments = file.scan_chunks().expect("Unable to scan chunks");
+    if verbose {
+        for segment in &segments {
+            println!("{:?}", segment);
+        }
+    }
 
     UffdPfHandler::from_unix_stream(stream, memfile_buffer, size, segments)
 }

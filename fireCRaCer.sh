@@ -303,6 +303,9 @@ FS_ARGS="overlay_root=$OVERLAY_ROOT overlay_size=$TEMPFS_SIZE"
 # Notice: /opt/tools/ro_init.sh has to be present in the root file system image
 BOOT_ARGS="$MISC_ARGS $DISABLE_I8042 $FAST_ARGS $FS_ARGS ip=$IP_SETTINGS init=/opt/tools/ro_init.sh $BOOT_ARGS"
 
+VCPU_COUNT=${VCPU_COUNT:-'2'}
+MEM_SIZE=${MEM_SIZE:-'1024'}
+
 CONFIG_FILE=$(mktemp --tmpdir 'vmconfig.XXXXXX')
 # Delete CONFIG_FILE on exit
 trap '{ rm -f -- "$CONFIG_FILE"; }' EXIT
@@ -332,8 +335,8 @@ cat <<EOF > $CONFIG_FILE
   $LOGGER
   $METRICS
   "machine-config": {
-    "vcpu_count": 2,
-    "mem_size_mib": 1024,
+    "vcpu_count": $VCPU_COUNT,
+    "mem_size_mib": $MEM_SIZE,
     "track_dirty_pages" : true
   }
 }
