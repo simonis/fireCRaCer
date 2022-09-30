@@ -44,6 +44,7 @@ COPY --from=deps --chown=crac:crac /deps/spring-petclinic/target/spring-petclini
 COPY --chown=crac:crac /tools/crac_init.sh /opt/tools/
 COPY --chown=crac:crac /tools/ro_init.sh /opt/tools/
 COPY --chown=crac:crac /tools/get_maps.sh /opt/tools/
+COPY --chown=crac:crac /tools/mem_mapping.sh /opt/tools/
 COPY --from=tools --chown=crac:crac /tools/virt2phys /opt/tools/
 COPY --from=tools --chown=crac:crac /tools/fc_log_timestamp /opt/tools/
 

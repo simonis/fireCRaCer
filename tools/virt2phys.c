@@ -5,11 +5,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
-long PAGE_SIZE;
+uint64_t PAGE_SIZE;
 
 typedef struct {
   uint8_t swap_type : 5;
@@ -27,7 +28,7 @@ typedef struct {
   unsigned int present : 1;
 } pm_entry;
 
-void scan_pagemap(int pagemap, pid_t pid, unsigned long start, unsigned long end) {
+void scan_pagemap(int pagemap, uint64_t start, uint64_t end) {
   while (start < end ) {
     pm_entry entry;
     size_t count;
@@ -38,7 +39,7 @@ void scan_pagemap(int pagemap, pid_t pid, unsigned long start, unsigned long end
       }
     }
     if (entry.present) {
-      printf("%d %#018lx %#018lx %d %d\n", pid, start, PAGE_SIZE * (unsigned long)entry.pfn, entry.exclusive, entry.file_shared);
+      printf("p %#018lx %#018lx %d %d\n", start, PAGE_SIZE * entry.pfn, entry.exclusive, entry.file_shared);
     }
     start += PAGE_SIZE;
   }
@@ -60,22 +61,43 @@ int main(int argc, char *argv[]) {
     return errno;
   }
 
-  char maps_file[PATH_MAX], pagemap_file[PATH_MAX];
+  char maps_file[PATH_MAX];
+  char pagemap_file[PATH_MAX];
+  char exe_link[PATH_MAX];
+  char executable[PATH_MAX];
   snprintf(maps_file, sizeof(maps_file), "/proc/%s/maps", argv[1]);
   snprintf(pagemap_file, sizeof(maps_file), "/proc/%s/pagemap", argv[1]);
+  snprintf(exe_link, sizeof(maps_file), "/proc/%s/exe", argv[1]);
+  ssize_t len = readlink(exe_link, executable, PATH_MAX - 1);
+  if (len >= 0) {
+    executable[len] = '\0';
+  } else {
+    executable[0] = '\0';
+  }
   FILE *maps = fopen(maps_file, "r");
   int pagemap = open(pagemap_file, O_RDONLY);
   if (maps == NULL || pagemap == -1) {
     perror("Cant open maps or pagemap file");
     return errno;
   }
+  printf("= %d %s\n", pid, executable);
 
   PAGE_SIZE = sysconf(_SC_PAGE_SIZE);
-  size_t len = PATH_MAX;
+  len = PATH_MAX;
   char *line = (char*)malloc(len);
   while(getline(&line, &len, maps) != -1) {
-    unsigned long start, end;
+    uint64_t start, end;
     sscanf(line, "%lx-%lx ", &start, &end);
-    scan_pagemap(pagemap, pid, start, end);
+    char *last = rindex(line, ' ');
+    char *nl = rindex(line, '\n');
+    char *pathname;
+    if (nl && nl > last) {
+      *nl = '\0';
+      pathname = last + 1;
+    } else {
+      pathname = "";
+    }
+    printf("v %#018lx %#018lx %s\n", start, end, pathname);
+    scan_pagemap(pagemap, start, end);
   }
 }
