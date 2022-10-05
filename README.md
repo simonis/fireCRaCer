@@ -1,2 +1,2 @@
 
-[](docs/images/UffdVisualizer.png)
+![](docs/images/UffdVisualizer.png)
