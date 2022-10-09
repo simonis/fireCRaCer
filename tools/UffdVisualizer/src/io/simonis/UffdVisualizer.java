@@ -16,11 +16,15 @@ import java.awt.Graphics2D;
 import java.awt.GraphicsConfiguration;
 import java.awt.GraphicsDevice;
 import java.awt.GraphicsEnvironment;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 
 import javax.swing.BorderFactory;
 import javax.swing.Box;
+import javax.swing.ImageIcon;
+import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JList;
 import javax.swing.JPanel;
@@ -156,10 +160,12 @@ class PhysicalMemory extends JPanel {
     }
 }
 
-class PhysicalViewPanel extends JPanel implements ListSelectionListener {
+class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionListener {
     private JList<String> processList;
     private JSplitPane horizontalSplitPane, verticalSplitPane;
     private PhysicalMemory physicalMemory;
+    private JButton rewindButton, forwardButton, playButton;
+    private ImageIcon playIcon, pauseIcon;
 
     public PhysicalViewPanel(HashMap<Integer, String> processMapping, PhysicalMapping physicalMapping, HashMap<Integer, TreeMap<Long, Long>> v2pMappings) {
         super(new BorderLayout());
@@ -180,6 +186,21 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener {
 
         // TBD
         JPanel controlPanel = new JPanel();
+        ImageIcon rewindIcon = new ImageIcon(getClass().getResource("/toolbarButtonGraphics/media/Rewind16.gif"));
+        ImageIcon forwardIcon = new ImageIcon(getClass().getResource("/toolbarButtonGraphics/media/FastForward16.gif"));
+        playIcon = new ImageIcon(getClass().getResource("/toolbarButtonGraphics/media/Play16.gif"));
+        pauseIcon = new ImageIcon(getClass().getResource("/toolbarButtonGraphics/media/Pause16.gif"));
+        rewindButton = new JButton(rewindIcon);
+        rewindButton.addActionListener(this);
+        forwardButton = new JButton(forwardIcon);
+        forwardButton.addActionListener(this);
+        playButton = new JButton(playIcon);
+        playButton.addActionListener(this);
+        playButton.setActionCommand("play");
+        controlPanel.add(rewindButton);
+        controlPanel.add(playButton);
+        controlPanel.add(forwardButton);
+
 
         this.add(pysicalMemoryScrollPane, BorderLayout.CENTER);
         this.add(processListScrollPane, BorderLayout.LINE_END);
@@ -191,6 +212,18 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener {
         String listElement = list.getSelectedValue();
         int pid = Integer.parseInt(listElement.substring(0, listElement.indexOf(':')));
         physicalMemory.setPid(pid);
+    }
+
+    public void actionPerformed(ActionEvent e) {
+        if (e.getSource().equals(playButton)) {
+            if ("play".equals(playButton.getActionCommand())) {
+                playButton.setActionCommand("pause");
+                playButton.setIcon(pauseIcon);
+            } else {
+                playButton.setActionCommand("play");
+                playButton.setIcon(playIcon);
+            }
+        }
     }
 }
 
