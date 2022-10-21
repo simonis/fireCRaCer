@@ -124,7 +124,7 @@ impl UffdPfHandler {
     fn populate_from_file(&self, host_virt_addr: u64, guest_phys_addr: u64) {
         let src = self.backing_buffer as u64 + guest_phys_addr;
         // Populate a single page from backing mem-file.
-        println!(" Loading: {:#018x} - {:#018x}", guest_phys_addr, guest_phys_addr + *PAGE_SIZE as u64);
+        println!("Loading: {:#018x} - {:#018x}", guest_phys_addr, guest_phys_addr + *PAGE_SIZE as u64);
         let ret = unsafe {
             self.uffd
                 .copy(src as *const _, host_virt_addr as *mut _, *PAGE_SIZE, true)
@@ -135,7 +135,7 @@ impl UffdPfHandler {
     }
 
     fn zero_out(&self, addr: u64, guest_phys_addr: u64) {
-        println!(" Zeroing: {:#018x} - {:#018x}", guest_phys_addr, guest_phys_addr + *PAGE_SIZE as u64);
+        println!("Zeroing: {:#018x} - {:#018x}", guest_phys_addr, guest_phys_addr + *PAGE_SIZE as u64);
         let ret = unsafe {
             self.uffd
                 .zeropage(addr as *mut _, *PAGE_SIZE, true)

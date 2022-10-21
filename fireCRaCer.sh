@@ -314,7 +314,7 @@ cat <<EOF > $CONFIG_FILE
 {
   "boot-source": {
     "kernel_image_path": "$KERNEL",
-    "boot_args": "$BOOT_ARGS"
+    "boot_args": "`sed 's/\"/\\\"/g;' <<< $BOOT_ARGS`"
   },
   "drives": [
     $RW_IMAGE
