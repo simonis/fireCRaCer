@@ -57,7 +57,7 @@ while getopts 'lmns:r:i:ukh?' opt; do
       KILL=1
       ;;
     ?|h)
-      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-n]] [-s <snapshot-dir>] [-r <snapshot-dir> [-l] [-u [<log-file>]]]"
+      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-n]] [-s <snapshot-dir>] [-r <snapshot-dir> [-l] [-u [<log-file>]]] [-k]"
       echo " -i <rw-image>: a file or device which will be used as read/write overlay for the root file system."
       echo "                By default a ram disk of TEMPFS_SIZE will be used."
       echo " -l: enable Firecracker logging to LOG_PATH with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
@@ -67,12 +67,15 @@ while getopts 'lmns:r:i:ukh?' opt; do
       echo ""
       echo " -s: snapshot Firecracker on tap device '$TAP_DEVICE' to <snapshot-dir>."
       echo "     If <snapshot-dir> doesn't exist, it will be created."
+      echo ""
       echo " -r: restore Firecracker snapshot on tap device '$TAP_DEVICE' from <snapshot-dir>."
-      echo " -k: send Firecracker guest on tap device '$TAP_DEVICE' CtrlAltDel message (i.e. shut it down)."
       echo " -u: run with a userfaultfd memory backend and redirect its output to <log-file>"
       echo "     (defaults to '/tmp/fireCRaCer-uffd-$TAP_DEVICE.log')."
       echo "     The userfaultfd is started from UFFD_HANDLER (defaults to '$UFFD_HANDLER')."
       echo "     Options can be passed to userfaultfd by setting UFFD_OPTS."
+      echo ""
+      echo " -k: send Firecracker guest on tap device TAP_DEVICE (defaults to '$TAP_DEVICE')"
+      echo "     a CtrlAltDel message (i.e. shut it down)."
       exit 1
       ;;
   esac
