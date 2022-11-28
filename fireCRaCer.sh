@@ -119,12 +119,15 @@ check_http_response() {
   actual="$1"
   expected="$2"
   message="$3"
+  exit_on_error="${4:-yes}"
   if [[ "x$actual" == "x$expected" ]]; then
     echo "$message: OK"
   else
     echo "$message: Error (HTTTP response was $ret)"
-    echo "Exiting.."
-    exit 1
+    if [[ "x$exit_on_error" == "xyes" ]]; then
+      echo "Exiting.."
+      exit 1
+    fi
   fi
 }
 
@@ -166,9 +169,10 @@ if [[ -v SNAPSHOT ]]; then
              -H 'Content-Type: application/json' \
              -d "{ \"snapshot_type\": \"Diff\", \
                    \"snapshot_path\": \"$SNAPSHOT/snapshot_file\", \
-                   \"mem_file_path\": \"$SNAPSHOT/mem_file\", \
-                   \"version\": \"1.0.0\" }")
-  check_http_response $ret "204" "Snapshot"
+                   \"mem_file_path\": \"$SNAPSHOT/mem_file\" }")
+  # Don't use an explicit snapshot version to run with every release of Firecracker
+  #                \"version\": \"1.0.0\" }")
+  check_http_response $ret "204" "Snapshot" "no"
   # Resume
   ret=$(curl --write-out '%{http_code}' \
              --silent \
