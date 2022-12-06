@@ -14,6 +14,9 @@ MYPATH=$(dirname $(realpath -s $0))
 # sudo ip tuntap add dev tap1 mode tap
 # sudo ip addr add 172.16.0.1/24 dev tap1
 # sudo ip link set tap1 up
+#
+# Delete tap device (for any case):
+# sudo ip link delete tap1
 
 FIRECRACKER=${FIRECRACKER:-"firecracker"}
 

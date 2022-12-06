@@ -77,6 +77,10 @@ do_overlay() {
 
 do_overlay
 
+# Mount sysfs in case we need more insights int othe kernel
+mount -t sysfs sysfs /sys
+mount -t debugfs debugfs /sys/kernel/debug/
+
 if [[ -n "$sshd" && ( "$sshd" == "true" || "$sshd" == "on" || "$sshd" == "1" ) ]]; then
   # Start ssh daemon for debugging
   echo "Starting ssh daemon" > /dev/kmsg

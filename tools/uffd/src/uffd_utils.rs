@@ -148,7 +148,7 @@ impl UffdPfHandler {
     // We don't use _thread_id for now. First, it requires a patched version of Firecracker which sets
     // the 'UFFD_FEATURE_THREAD_ID' feature (i.e. 'uffd_builder.require_features(FeatureFlags::THREAD_ID)').
     // Second, the thread IDs are not meaningfull if the process which generates the page faults is a KVM
-    // container like firecracker, because the thread guests are not visible on the host.
+    // container like firecracker, because the guest threads are not visible on the host.
     pub fn serve_pf(&mut self, addr: *mut u8, write: bool, _thread_id: Pid) {
         // Find the start of the page that the current faulting address belongs to.
         let dst = (addr as usize & !(*PAGE_SIZE as usize - 1)) as *mut c_void;

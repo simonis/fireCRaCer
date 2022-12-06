@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.TreeMap;
 import java.util.Vector;
@@ -43,6 +44,15 @@ import javax.swing.event.ListSelectionEvent;
 import javax.swing.event.ListSelectionListener;
 
 
+class Colors {
+    public static Color BACKGROUND = Color.getColor("uffdVisualizer.backgroundColor", Color.LIGHT_GRAY);
+    public static Color MEMORY = Color.getColor("uffdVisualizer.memoryColor", Color.GRAY);
+    public static Color SELECTED = Color.getColor("uffdVisualizer.selectedColor", Color.DARK_GRAY);
+    public static Color SHARED = Color.getColor("uffdVisualizer.sharedColor", 0x4D7A97);
+    public static Color LOADED = Color.getColor("uffdVisualizer.loadedColor", Color.ORANGE);
+    public static Color NEW = Color.getColor("uffdVisualizer.sharedColor", Color.BLUE);
+}
+
 class PidVirtual {
     private int pid;
     private long virtual;
@@ -60,7 +70,7 @@ class PidVirtual {
 
 class VirtualMapping {
     private long start; // inclusive
-    private long end;   // excluseve
+    private long end;   // exclusive
     private String info;
     public VirtualMapping(long start, long end, String info) {
         this.start = start;
@@ -72,14 +82,41 @@ class VirtualMapping {
     }
 }
 
-class PhysicalMapping extends TreeMap<Long, ArrayList<PidVirtual>> {
+class PhysicalMapping extends TreeMap<Long, Object[]> {
     public void put(long physical, int pid, long virtual) {
-        ArrayList<PidVirtual> list = this.get(physical);
+        Object objArr[] = this.get(physical);
+        if (objArr == null) {
+            objArr = new Object[2];
+            this.put(physical, objArr);
+        }
+        ArrayList<PidVirtual> list = (ArrayList<PidVirtual>)objArr[0];
         if (list == null) {
             list = new ArrayList<PidVirtual>();
-            this.put(physical, list);
+            objArr[0] = list;
         }
-        list .add(new PidVirtual(pid, virtual));
+        list.add(new PidVirtual(pid, virtual));
+    }
+    public ArrayList<PidVirtual> getPidVirtual(long physical) {
+        Object objArr[] = this.get(physical);
+        if (objArr == null) {
+            return null;
+        }
+        return (ArrayList<PidVirtual>)objArr[0];
+    }
+    public void put(long physical, byte uffdFlags) {
+        Object objArr[] = this.get(physical);
+        if (objArr == null) {
+            objArr = new Object[2];
+            this.put(physical, objArr);
+        }
+        objArr[1] = new Byte(uffdFlags);
+    }
+    public Byte getUffdFlags(long physical) {
+        Object objArr[] = this.get(physical);
+        if (objArr == null) {
+            return null;
+        }
+        return (Byte)objArr[1];
     }
 }
 
@@ -91,6 +128,9 @@ final class UffdFlags {
     public static final int LOAD = 2;
     // 0 = remove, 1 = pagefault
     public static final int PAGE = 4;
+    // All the previous flags are only valid if this flag is '1' (i.e. SET)
+    // 0 = empty, 1 = set
+    public static final int SET = 128;
 }
 
 final class ReplayThreadState {
@@ -98,7 +138,7 @@ final class ReplayThreadState {
     public static final int PLAY = 1;
     public static final int REWIND = 2;
     public static final int FORWARD = 3;
-    public static final int RESET = 4;
+    public static final int QUIT = 4;
 }
 
 class PhysicalMemory extends JPanel {
@@ -109,7 +149,6 @@ class PhysicalMemory extends JPanel {
     private HashMap<Integer, TreeMap<Long, Long>> v2pMappings;
     private HashMap<Integer, String> processMapping;
     private int pid;
-    private static final Color shared = new Color(0x4D7A97);
 
     public PhysicalMemory(PhysicalMapping physicalMapping,
                           HashMap<Integer, TreeMap<Long, Long>> v2pMappings,
@@ -131,7 +170,7 @@ class PhysicalMemory extends JPanel {
 
     public String getToolTipText(MouseEvent event) {
         long address = (long)(((event.getY() + 1) / scale) * width + ((event.getX() + 1) / scale)) * pageSize;
-        ArrayList<PidVirtual> pids = physicalMapping.get(address);
+        ArrayList<PidVirtual> pids = physicalMapping.getPidVirtual(address);
         StringBuilder sb = new StringBuilder("<html>");
         sb.append(String.format("%#018x<br/>", address));
         if (pids != null && pids.size() > 0) {
@@ -139,6 +178,12 @@ class PhysicalMemory extends JPanel {
                 int pid = pv.getPid();
                 sb.append(String.format("%d: %s (%#018x)<br/>", pid, processMapping.get(pid), pv.getVirtual()));
             }
+        }
+        Byte uffdFlags = physicalMapping.getUffdFlags(address);
+        if (uffdFlags != null && (uffdFlags & UffdFlags.SET) > 0) {
+            sb.append("<hr/>");
+            sb.append(String.format("uffd event: %s<br/>", ((uffdFlags & UffdFlags.WRITE) > 0) ? "write" : "read" ));
+            sb.append(String.format("uffd action: %s", ((uffdFlags & UffdFlags.LOAD) > 0) ? "load" : "zero" ));
         }
         return sb.append("</html>").toString();
     }
@@ -166,7 +211,6 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
     private Thread replayThread;
     private volatile int replayState = ReplayThreadState.STOP;
     private int pid;
-    private static final Color shared = new Color(0x4D7A97);
 
     private BufferedImage createEmptyImage() {
         final long memory = UffdVisualizer.memory;
@@ -185,9 +229,9 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
         final int pageSize = UffdVisualizer.pageSize, width = UffdVisualizer.width, scale = UffdVisualizer.scale;
         BufferedImage baseImage = createEmptyImage();
         Graphics2D g2d = baseImage.createGraphics();
-        g2d.setBackground(Color.LIGHT_GRAY);
+        g2d.setBackground(Colors.BACKGROUND);
         g2d.clearRect(0, 0, baseImage.getWidth(), baseImage.getHeight());
-        g2d.setColor(Color.GRAY);
+        g2d.setColor(Colors.MEMORY);
         for (long address : physicalMapping.keySet()) {
             int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
             int y = (int)(address / (pageSize * width)) * scale;
@@ -203,18 +247,15 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
         BufferedImage pidImage = createEmptyImage();
         Graphics2D g2d = pidImage.createGraphics();
         g2d.drawImage(baseImage, 0, 0, null);
-        if (pid != 0) {
-            for (long address : v2pMappings.get(pid).values()) {
-                int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
-                int y = (int)(address / (pageSize * width)) * scale;
-                if (physicalMapping.get(address) == null || physicalMapping.get(address).size() == 1) {
-                    g2d.setColor(Color.DARK_GRAY);
-                } else {
-                    g2d.setColor(shared);
-                }
-                g2d.drawRect(x, y, scale - 1, scale - 1);
+        for (long address : v2pMappings.get(pid).values()) {
+            int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
+            int y = (int)(address / (pageSize * width)) * scale;
+            if (physicalMapping.getPidVirtual(address).size() == 1) {
+                g2d.setColor(Colors.SELECTED);
+            } else {
+                g2d.setColor(Colors.SHARED);
             }
-
+            g2d.drawRect(x, y, scale - 1, scale - 1);
         }
         return pidImage;
     }
@@ -233,6 +274,7 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
             int slash = exe.lastIndexOf('/');
             processes.add(pid + ": " + (slash == -1 ? exe : exe.substring(slash + 1)));
         });
+        processes.sort(Comparator.comparing(s -> Integer.valueOf(s.substring(0, s.indexOf(':')))));
         processList = new JList(processes);
         processList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         processList.addListSelectionListener(this);
@@ -259,7 +301,8 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
         JLabel uffdLabel = new JLabel();
         uffdLabel.setText(
             String.format("<html><b>Userfaultfd:</b> %d events (%d pages / %dkb loaded,  %d pages / %dkb zeroed)</html>",
-               uffdEntries, uffdLoading, uffdLoading * UffdVisualizer.pageSize, uffdZeroing, uffdZeroing * UffdVisualizer.pageSize));
+                          uffdEntries, uffdLoading, (uffdLoading * UffdVisualizer.pageSize) / 1024,
+                          uffdZeroing, (uffdZeroing * UffdVisualizer.pageSize) / 1024));
         controlPanel.add(uffdLabel);
         uffdField = new JFormattedTextField();
         uffdField.setColumns(6);
@@ -275,6 +318,8 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
         this.add(pysicalMemoryScrollPane, BorderLayout.CENTER);
         this.add(processListScrollPane, BorderLayout.LINE_END);
         this.add(controlPanel, BorderLayout.PAGE_END);
+        // Start with kernel pages selected
+        processList.setSelectedIndex(1);
     }
 
     public void valueChanged(ListSelectionEvent e) {
@@ -309,14 +354,22 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
                                             long address = uffdPhysical[uffdIndex];
                                             int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
                                             int y = (int)(address / (pageSize * width)) * scale;
-                                            g2d.setColor(Color.GREEN);
-                                            /*
-                                            if (physicalMapping.get(address) == null || physicalMapping.get(address).size() == 1) {
-                                                g2d.setColor(Color.DARK_GRAY);
-                                            } else {
-                                                g2d.setColor(shared);
+                                            ArrayList<PidVirtual> pids = physicalMapping.getPidVirtual(address);
+                                            boolean selected = false;
+                                            if (pids != null) {
+                                                for (PidVirtual pv : pids) {
+                                                    if (pv.getPid() == pid) {
+                                                        selected = true;
+                                                        break;
+                                                    }
+                                                }
                                             }
-                                            */
+                                            if (selected) {
+                                                g2d.setColor(Colors.LOADED);
+                                            } else {
+                                                g2d.setColor(Colors.NEW);
+                                            }
+                                            physicalMapping.put(address, uffdFlags[uffdIndex]);
                                             g2d.drawRect(x, y, scale - 1, scale - 1);
                                             uffdField.setValue(uffdIndex);
                                             physicalMemory.setImage(uffdImage);
@@ -337,6 +390,12 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
                                         } catch (InterruptedException ie) {}
                                         break;
                                     }
+                                    case ReplayThreadState.QUIT : {
+                                        playButton.setActionCommand("play");
+                                        playButton.setIcon(playIcon);
+                                        replayState = ReplayThreadState.STOP;
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -352,7 +411,7 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, ActionL
         } else if (e.getSource().equals(rewindButton)) {
             playButton.setActionCommand("play");
             playButton.setIcon(playIcon);
-            replayState = ReplayThreadState.STOP;
+            replayState = ReplayThreadState.QUIT;
             replayThread = null;
             uffdIndex = 0;
             uffdField.setValue(uffdIndex);
@@ -400,6 +459,10 @@ public class UffdVisualizer {
         } else if ("p".equals(fields[0])) {
             long virtual = Long.parseUnsignedLong(fields[1], 2, 18, 16);
             long physical = Long.parseUnsignedLong(fields[2], 2, 18, 16);
+            if (pid <= 0) {
+                // Kernel addresses are all physical addresses
+                physical = virtual;
+            }
             physicalMapping.put(physical, pid, virtual);
             v2pMappings.get(pid).put(virtual, physical);
         }
@@ -408,14 +471,14 @@ public class UffdVisualizer {
     private void processUffdLine(String line) {
         // A line in the uffd log file looks as follows:
         // UFFD_EVENT_PAGEFAULT (r): 0x00007fffbbaa4000 0x00007fffbbaa4000  Loading: 0x0000000003cb5000 - 0x0000000003cb6000
-        String fields[] = line.split(" ");
+        String fields[] = line.split(" +");
         if (fields.length < 6 || !fields[0].startsWith("UFFD_EVENT")) {
             return;
         }
         if ("UFFD_EVENT_PAGEFAULT".equals(fields[0])) {
             int entry = uffdEntries++;
             uffdPhysical[entry] = Long.parseUnsignedLong(fields[5], 2, 18, 16);
-            uffdFlags[entry] |= UffdFlags.PAGE;
+            uffdFlags[entry] |= UffdFlags.PAGE | UffdFlags.SET;
             if ("(w):".equals(fields[1])) {
                 uffdFlags[entry] |= UffdFlags.WRITE;
             }
@@ -457,8 +520,9 @@ public class UffdVisualizer {
             Files.lines(uffd.toPath()).forEach(l -> processUffdLine(l));
 
             System.out.println(String.format("Parsed %d UFFD events (%d pages / %dkb loaded,  %d pages / %dkb zeroed) in %dms.",
-                uffdEntries, uffdLoading, uffdLoading * pageSize, uffdZeroing, uffdZeroing * pageSize,
-                System.currentTimeMillis() - parsedMappings));
+                                             uffdEntries, uffdLoading, (uffdLoading * pageSize) / 1024,
+                                             uffdZeroing, (uffdZeroing * pageSize) / 1024,
+                                             System.currentTimeMillis() - parsedMappings));
         } catch (IOException ioe) {
             System.err.println(ioe);
             System.exit(-1);
@@ -477,7 +541,7 @@ public class UffdVisualizer {
     }
 
     private static void help() {
-        System.out.println("\nUffdVisualizer <mapings-file> <uffd-file>\n");
+        System.out.println("\nio.simonis.UffdVisualizer <mapings-file> <uffd-file>\n");
         System.exit(-1);
     }
     public static void main(String args[]) {
@@ -492,6 +556,7 @@ public class UffdVisualizer {
         if (!uffd.canRead()) {
             System.err.println("Can't read " + uffd);
         }
+        ToolTipManager.sharedInstance().setDismissDelay(Integer.MAX_VALUE);
         UffdVisualizer uffdVisualizer = new UffdVisualizer(mappings, uffd);
         uffdVisualizer.createFrame();
     }
