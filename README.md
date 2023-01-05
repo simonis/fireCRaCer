@@ -1,4 +1,4 @@
-This project is for experimenting and investigating how OpenJDK and [CRaC](https://wiki.openjdk.org/display/crac) can be used with inside the [Firecracker](https://firecracker-microvm.github.io/) microVM.
+This project is for experimenting and investigating how OpenJDK and [CRaC](https://wiki.openjdk.org/display/crac) can be used inside the [Firecracker](https://firecracker-microvm.github.io/) microVM.
 
 ### Getting started
 

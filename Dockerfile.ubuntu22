@@ -23,7 +23,7 @@ WORKDIR spring-petclinic
 RUN mvn clean package
 
 FROM base
-RUN apt-get install -y iproute2 openssh-server vim-tiny --no-install-recommends
+RUN apt-get install -y iproute2 openssh-server socat vim-tiny --no-install-recommends
 
 RUN adduser --disabled-password --gecos "CRaC testing" crac
 RUN usermod -p `perl -e 'print crypt("crac1234", "salt"),"\n"'` crac

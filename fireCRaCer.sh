@@ -15,8 +15,15 @@ MYPATH=$(dirname $(realpath -s $0))
 # sudo ip addr add 172.16.0.1/24 dev tap1
 # sudo ip link set tap1 up
 #
+# Enable routing from Firecracker to the Internet (with <network-interface>=eth0,enp0s31f6,..):
+# sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+# sudo iptables -t nat -A POSTROUTING -o <network-interface> -j MASQUERADE
+# sudo iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+# sudo iptables -A FORWARD -i tap0 -o <network-interface> -j ACCEPT
+#
 # Delete tap device (for any case):
 # sudo ip link delete tap1
+#
 
 FIRECRACKER=${FIRECRACKER:-"firecracker"}
 
@@ -117,6 +124,7 @@ IP_SETTINGS=`ifconfig $TAP_DEVICE |
   }'`
 # echo $IP_SETTINGS
 FC_SOCKET=${FC_SOCKET:-"/tmp/fireCRaCer-$TAP_DEVICE.socket"}
+FC_VSOCK=${FC_VSOCK:-"/tmp/fireCRaCer-$TAP_DEVICE.vsock"}
 
 check_http_response() {
   actual="$1"
@@ -243,6 +251,7 @@ if [[ -v RESTORE ]]; then
     BACKEND_TYPE="File"
   fi
   rm -f $FC_SOCKET
+  rm -f $FC_VSOCK
   echo "Running: $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER"
   # Enable job control
   set -m
@@ -342,6 +351,15 @@ cat <<EOF > $CONFIG_FILE
       "host_dev_name": "$TAP_DEVICE"
     }
   ],
+  "mmds-config": {
+    "network_interfaces": ["eth0"],
+    "ipv4_address": "169.254.169.254",
+    "version": "V1"
+  },
+  "vsock": {
+    "guest_cid": $(expr $TAP_DEVICE_NR + 3),
+    "uds_path": "$FC_VSOCK"
+  },
   $LOGGER
   $METRICS
   "machine-config": {
@@ -353,5 +371,6 @@ cat <<EOF > $CONFIG_FILE
 EOF
 
 rm -f $FC_SOCKET
+rm -f $FC_VSOCK
 echo "Running: $FIRECRACKER --boot-timer --api-sock $FC_SOCKET --config-file $CONFIG_FILE"
 $FIRECRACKER --boot-timer --api-sock $FC_SOCKET --config-file $CONFIG_FILE
