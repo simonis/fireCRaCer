@@ -66,10 +66,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         // We expect to receive either a Page Fault or Removed
         // event (if the balloon device is enabled).
         match event {
-            userfaultfd::Event::Pagefault { addr, rw, thread_id, .. } => uffd_handler.serve_pf(
+            userfaultfd::Event::Pagefault { addr, rw, .. } => uffd_handler.serve_pf(
                 addr as *mut u8,
                 rw.eq(&userfaultfd::ReadWrite::Write),
-                thread_id),
+                nix::unistd::Pid::from_raw(-1)),
             userfaultfd::Event::Remove { start, end } => uffd_handler.serve_remove(
                 start as *mut u8 as u64,
                 end as *mut u8 as u64,
