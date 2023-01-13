@@ -185,7 +185,7 @@ class MemMapTreeModel implements TreeModel {
         }
         @Override
         public String toString() {
-            return "pmap";
+            return process.pid() <= 0 ? "physical" : "pmap";
         }
     }
 

@@ -33,7 +33,7 @@ UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
 
 TAP_DEVICE=${TAP_DEVICE:-'tap0'}
 
-while getopts 'lmns:r:i:ukh?' opt; do
+while getopts 'lmds:r:n:i:ukh?' opt; do
   case "$opt" in
     l)
       LOGGING=1
@@ -47,6 +47,9 @@ while getopts 'lmns:r:i:ukh?' opt; do
     r)
       RESTORE="$OPTARG"
       ;;
+    n)
+      NAMESPACE="$OPTARG"
+      ;;
     u)
       nextopt=${!OPTIND}
       # existing or starting with dash?
@@ -57,7 +60,7 @@ while getopts 'lmns:r:i:ukh?' opt; do
         USERFAULTFD=1
       fi
       ;;
-    n)
+    d)
       NO_SERIAL="8250.nr_uarts=0"
       ;;
     i)
@@ -67,12 +70,12 @@ while getopts 'lmns:r:i:ukh?' opt; do
       KILL=1
       ;;
     ?|h)
-      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-n]] [-s <snapshot-dir>] [-r <snapshot-dir> [-l] [-u [<log-file>]]] [-k]"
+      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-d]] [-s <snapshot-dir>] [-r <snapshot-dir> [-n <namespace>] [-l] [-u [<log-file>]]] [-k]"
       echo " -i <rw-image>: a file or device which will be used as read/write overlay for the root file system."
       echo "                By default a ram disk of TEMPFS_SIZE will be used."
       echo " -l: enable Firecracker logging to LOG_PATH with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
       echo " -m: enable Firecracker metrics to METRICS_PATH"
-      echo " -n: Disable serial devices (i.e 8250.nr_uarts=0)."
+      echo " -d: Disable serial devices (i.e 8250.nr_uarts=0)."
       echo "     This saves ~100ms boot time but will disable the boot console."
       echo ""
       echo " -s: snapshot Firecracker on tap device '$TAP_DEVICE' to <snapshot-dir>."
@@ -83,6 +86,8 @@ while getopts 'lmns:r:i:ukh?' opt; do
       echo "     (defaults to '/tmp/fireCRaCer-uffd-$TAP_DEVICE.log')."
       echo "     The userfaultfd is started from UFFD_HANDLER (defaults to '$UFFD_HANDLER')."
       echo "     Options can be passed to userfaultfd by setting UFFD_OPTS."
+      echo " -n: restore the snapshot in the network namespace 'fc<namespace>' where <namespace> has"
+      echo "     to be a number between 0 and 255. If the namespace doesn't exist, it will be created."
       echo ""
       echo " -k: send Firecracker guest on tap device TAP_DEVICE (defaults to '$TAP_DEVICE')"
       echo "     a CtrlAltDel message (i.e. shut it down)."
@@ -123,7 +128,42 @@ IP_SETTINGS=`ifconfig $TAP_DEVICE |
     printf("%s.%s.%s.%s::%s:%s::eth0:off\n", ip[1], ip[2], ip[3], ip[4] + 1, gateway, netmask)
   }'`
 # echo $IP_SETTINGS
-FC_SOCKET=${FC_SOCKET:-"/tmp/fireCRaCer-$TAP_DEVICE.socket"}
+
+
+# See: https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/network-for-clones.md
+setup_namespace() {
+  if error=`! ip netns list | grep fc$NAMESPACE -q 2>&1`; then
+    echo "network namespace fc$NAMESPACE not configured ($error)"
+    # namespaces
+    sudo ip netns add fc$NAMESPACE
+    sudo ip netns exec fc$NAMESPACE ip tuntap add name $TAP_DEVICE mode tap
+    sudo ip netns exec fc$NAMESPACE ip addr add 172.16.$TAP_DEVICE_NR.1/24 dev $TAP_DEVICE
+    sudo ip netns exec fc$NAMESPACE ip link set $TAP_DEVICE up
+    # veth
+    sudo ip netns exec fc$NAMESPACE ip link add veth$NAMESPACE type veth peer name veth
+    sudo ip netns exec fc$NAMESPACE ip link set veth$NAMESPACE netns 1
+    sudo ip netns exec fc$NAMESPACE ip addr add 10.0.$NAMESPACE.2/24 dev veth
+    sudo ip netns exec fc$NAMESPACE ip link set dev veth up
+    sudo ip addr add 10.0.$NAMESPACE.1/24 dev veth$NAMESPACE
+    sudo ip link set dev veth$NAMESPACE up
+    sudo ip netns exec fc$NAMESPACE ip route add default via 10.0.$NAMESPACE.1
+    # iptables
+    sudo ip netns exec fc$NAMESPACE iptables -t nat -A POSTROUTING -o veth -s 172.16.$TAP_DEVICE_NR.2 -j SNAT --to 172.17.$NAMESPACE.2
+    sudo ip netns exec fc$NAMESPACE iptables -t nat -A PREROUTING -i veth -d 172.17.$NAMESPACE.2 -j DNAT --to 172.16.$TAP_DEVICE_NR.2
+    sudo ip route add 172.17.$NAMESPACE.2 via 10.0.$NAMESPACE.2
+  fi
+}
+
+if [[ -v NAMESPACE ]]; then
+  setup_namespace
+  NAMESPACE_NAME="-fc$NAMESPACE"
+  # We do `sudo -v` here because later we will use `NAMESPACE_CMD`
+  # to prefix commands which will be started in the background.
+  sudo -v
+  NAMESPACE_CMD="sudo ip netns exec fc$NAMESPACE sudo -u $USER "
+fi
+
+FC_SOCKET=${FC_SOCKET:-"/tmp/fireCRaCer-${TAP_DEVICE}${NAMESPACE_NAME}.socket"}
 FC_VSOCK=${FC_VSOCK:-"/tmp/fireCRaCer-$TAP_DEVICE.vsock"}
 
 check_http_response() {
@@ -198,7 +238,7 @@ if [[ -v SNAPSHOT ]]; then
 fi
 
 if [[ -v LOGGING ]]; then
-  LOG_PATH=${LOG_PATH:-"/tmp/fireCRaCer-$TAP_DEVICE.log"}
+  LOG_PATH=${LOG_PATH:-"/tmp/fireCRaCer-${TAP_DEVICE}${NAMESPACE_NAME}.log"}
   LOG_LEVEL=${LOG_LEVEL:-"Info"}
   LOG_SHOW_LEVEL=${LOG_SHOW_LEVEL:-"true"}
   LOG_SHOW_ORIGIN=${LOG_SHOW_ORIGIN:-"true"}
@@ -232,13 +272,13 @@ if [[ -v RESTORE ]]; then
   fi
   if [[ -v USERFAULTFD ]]; then
     if [[ $USERFAULTFD = "1" ]]; then
-      USERFAULTFD="/tmp/fireCRaCer-uffd-${TAP_DEVICE:-tap0}.log"
+      USERFAULTFD="/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_NAME}.log"
     fi
     if [ ! -f "$UFFD_HANDLER" ]; then
       echo "Error: can't access userfaultfd daemon at $UFFD_HANDLER"
       exit 1
     fi
-    UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-$TAP_DEVICE.socket"}
+    UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_NAME}.socket"}
     rm -f $UFFD_SOCKET
     echo "Running: $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1"
     $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1 &
@@ -252,13 +292,13 @@ if [[ -v RESTORE ]]; then
   fi
   rm -f $FC_SOCKET
   rm -f $FC_VSOCK
-  echo "Running: $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER"
+  echo "Running: $NAMESPACE_CMD $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER"
   # Enable job control
   set -m
   # Have to redirect stdin because firecracker wants to set stdin to raw mode
   # and this will not work if job control is anbled (i.e. firecracker
   # will receive a SIGTTIN/SIGTTOU signal and block).
-  $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
+  $NAMESPACE_CMD $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
   sleep 1
   ret=$(curl --write-out '%{http_code}' \
              --silent \
