@@ -21,8 +21,11 @@ MYPATH=$(dirname $(realpath -s $0))
 # sudo iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 # sudo iptables -A FORWARD -i tap0 -o <network-interface> -j ACCEPT
 #
-# Delete tap device (for any case):
+# Delete network device (tap*, veth*, ..):
 # sudo ip link delete tap1
+#
+# Delete network namespace:
+# sudo ip netns delete fc0
 #
 
 FIRECRACKER=${FIRECRACKER:-"firecracker"}
@@ -31,9 +34,9 @@ KERNEL=${KERNEL:-"$MYPATH/deps/vmlinux"}
 IMAGE=${IMAGE:-"$MYPATH/deps/rootfs.ext4"}
 UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
 
-TAP_DEVICE=${TAP_DEVICE:-'tap0'}
+TAP_DEVICE=0
 
-while getopts 'lmds:r:n:i:ukh?' opt; do
+while getopts 'lmdt:s:r:n:i:ukh?' opt; do
   case "$opt" in
     l)
       LOGGING=1
@@ -43,6 +46,9 @@ while getopts 'lmds:r:n:i:ukh?' opt; do
       ;;
     s)
       SNAPSHOT="$OPTARG"
+      ;;
+    t)
+      TAP_DEVICE="$OPTARG"
       ;;
     r)
       RESTORE="$OPTARG"
@@ -70,26 +76,33 @@ while getopts 'lmds:r:n:i:ukh?' opt; do
       KILL=1
       ;;
     ?|h)
-      echo "Usage: $(basename $0) [[-i <rw-image>] [-l] [-m] [-d]] [-s <snapshot-dir>] [-r <snapshot-dir> [-n <namespace>] [-l] [-u [<log-file>]]] [-k]"
-      echo " -i <rw-image>: a file or device which will be used as read/write overlay for the root file system."
-      echo "                By default a ram disk of TEMPFS_SIZE will be used."
-      echo " -l: enable Firecracker logging to LOG_PATH with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
+      echo "Usage: fireCRaCer.sh [-l] [-m] [-t <tap>] [-d] [-i <rw-image>]"
+      echo "       fireCRaCer.sh -s <snapshot-dir> [-t <tap>]"
+      echo "       fireCRaCer.sh -r <snapshot-dir> [-t <tap>] [-n <namespace>] [-l] [-u [<log-file>]]"
+      echo "       fireCRaCer.sh -k [-t <tap>]"
+      echo ""
+      echo " -l: enable Firecracker logging to LOG_PATH (default '/tmp/fireCRaCer-tap<tap>[-fc<namespace>].log')"
+      echo "     with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
       echo " -m: enable Firecracker metrics to METRICS_PATH"
+      echo " -t <tap>: connect Firecracker to tap device 'tap<tap>' with <tap> from 0..255 (default 'tap0')."
+      echo"            If the tap device doesn't exist, it will be created."
       echo " -d: Disable serial devices (i.e 8250.nr_uarts=0)."
       echo "     This saves ~100ms boot time but will disable the boot console."
+      echo " -i <rw-image>: a file or device which will be used as read/write overlay for the root file system."
+      echo "                By default a ram disk of TEMPFS_SIZE will be used."
       echo ""
-      echo " -s: snapshot Firecracker on tap device '$TAP_DEVICE' to <snapshot-dir>."
+      echo " -s: snapshot Firecracker on tap device 'tap<tap>' (default 'tap0') to <snapshot-dir>."
       echo "     If <snapshot-dir> doesn't exist, it will be created."
       echo ""
-      echo " -r: restore Firecracker snapshot on tap device '$TAP_DEVICE' from <snapshot-dir>."
+      echo " -r: restore Firecracker snapshotted on tap device'tap<tap>' (default 'tap0') from <snapshot-dir>."
       echo " -u: run with a userfaultfd memory backend and redirect its output to <log-file>"
-      echo "     (defaults to '/tmp/fireCRaCer-uffd-$TAP_DEVICE.log')."
+      echo "     (defaults to '/tmp/fireCRaCer-uffd-'tap<tap>'.log')."
       echo "     The userfaultfd is started from UFFD_HANDLER (defaults to '$UFFD_HANDLER')."
       echo "     Options can be passed to userfaultfd by setting UFFD_OPTS."
-      echo " -n: restore the snapshot in the network namespace 'fc<namespace>' where <namespace> has"
-      echo "     to be a number between 0 and 255. If the namespace doesn't exist, it will be created."
+      echo " -n: restore the snapshot in the network namespace 'fc<namespace>' with <namespace>"
+      echo "      from 0..255. If the namespace doesn't exist, it will be created."
       echo ""
-      echo " -k: send Firecracker guest on tap device TAP_DEVICE (defaults to '$TAP_DEVICE')"
+      echo " -k: send Firecracker on tap device 'tap<tap>' (default 'tap0')"
       echo "     a CtrlAltDel message (i.e. shut it down)."
       exit 1
       ;;
@@ -97,28 +110,30 @@ while getopts 'lmds:r:n:i:ukh?' opt; do
 done
 shift "$(($OPTIND -1))"
 
+echo_and_exec() { echo "  $@" ; "$@" ; }
+
 if [[ ! -r /dev/kvm ]]; then
   echo "/dev/kvm not readable! This is required to run firecracker."
-  echo "running: setfacl -m u:${USER}:rw /dev/kvm"
-  sudo setfacl -m u:${USER}:rw /dev/kvm
+  echo "Running:"
+  echo_and_exec sudo setfacl -m u:${USER}:rw /dev/kvm
 fi
 
-TAP_DEVICE_NR=`echo $TAP_DEVICE | grep -oP '^tap[0-9]{1,3}$' | grep -oP '[0-9]{1,3}$'`
-if [[ "x$TAP_DEVICE_NR" == "x" ]]; then
-  echo "TAP_DEVICE must have the form 'tap<num>' with <num> = 0..255 (was '$TAP_DEVICE')"
+TAP_DEVICE_NR=`echo $TAP_DEVICE | grep -oP '^[0-9]{1,3}$'`
+if [[ "$TAP_DEVICE_NR" != "" && $TAP_DEVICE_NR -lt 256 ]]; then
+  TAP_DEVICE_NR=$( printf "%d" $TAP_DEVICE_NR )
+  TAP_DEVICE_NR_HEX=$( printf "%.2x" $TAP_DEVICE_NR )
+  TAP_DEVICE="tap$TAP_DEVICE_NR"
+else
+  echo "TAP_DEVICE must be a number between 0 and 255 (was '$TAP_DEVICE')"
   exit 1
 fi
-TAP_DEVICE_NR_HEX=$( printf "%.2x" $TAP_DEVICE_NR )
 
 if error=`! ip link show $TAP_DEVICE 2>&1`; then
-  echo "tap device TAP_DEVICE=$TAP_DEVICE not configured ($error)"
+  echo "tap device $TAP_DEVICE not configured ($error)"
   echo "Running:"
-  echo "  sudo ip tuntap add dev $TAP_DEVICE mode tap"
-  echo "  sudo ip addr add 172.16.$TAP_DEVICE_NR.1/24 dev $TAP_DEVICE"
-  echo "  sudo ip link set $TAP_DEVICE up"
-  sudo ip tuntap add dev $TAP_DEVICE mode tap
-  sudo ip addr add 172.16.$TAP_DEVICE_NR.1/24 dev $TAP_DEVICE
-  sudo ip link set $TAP_DEVICE up
+  echo_and_exec sudo ip tuntap add dev $TAP_DEVICE mode tap
+  echo_and_exec sudo ip addr add 172.16.$TAP_DEVICE_NR.1/24 dev $TAP_DEVICE
+  echo_and_exec sudo ip link set $TAP_DEVICE up
 fi
 IP_SETTINGS=`ifconfig $TAP_DEVICE |
   awk '/inet.+netmask/ {
@@ -132,38 +147,57 @@ IP_SETTINGS=`ifconfig $TAP_DEVICE |
 
 # See: https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/network-for-clones.md
 setup_namespace() {
-  if error=`! ip netns list | grep fc$NAMESPACE -q 2>&1`; then
-    echo "network namespace fc$NAMESPACE not configured ($error)"
+  if error=`! ip netns list | grep $NAMESPACE -q 2>&1`; then
+    echo "network namespace $NAMESPACE not configured ($error)"
+    echo "Running:"
     # namespaces
-    sudo ip netns add fc$NAMESPACE
-    sudo ip netns exec fc$NAMESPACE ip tuntap add name $TAP_DEVICE mode tap
-    sudo ip netns exec fc$NAMESPACE ip addr add 172.16.$TAP_DEVICE_NR.1/24 dev $TAP_DEVICE
-    sudo ip netns exec fc$NAMESPACE ip link set $TAP_DEVICE up
+    echo_and_exec sudo ip netns add $NAMESPACE
     # veth
-    sudo ip netns exec fc$NAMESPACE ip link add veth$NAMESPACE type veth peer name veth
-    sudo ip netns exec fc$NAMESPACE ip link set veth$NAMESPACE netns 1
-    sudo ip netns exec fc$NAMESPACE ip addr add 10.0.$NAMESPACE.2/24 dev veth
-    sudo ip netns exec fc$NAMESPACE ip link set dev veth up
-    sudo ip addr add 10.0.$NAMESPACE.1/24 dev veth$NAMESPACE
-    sudo ip link set dev veth$NAMESPACE up
-    sudo ip netns exec fc$NAMESPACE ip route add default via 10.0.$NAMESPACE.1
+    echo_and_exec sudo ip netns exec $NAMESPACE ip link add veth$NAMESPACE_NR type veth peer name veth
+    # Move 'veth$NAMESPACE_NR' into the global default namespace (i.e. the one of pid '1')
+    echo_and_exec sudo ip netns exec $NAMESPACE ip link set veth$NAMESPACE_NR netns 1
+    echo_and_exec sudo ip netns exec $NAMESPACE ip addr add 10.0.$NAMESPACE_NR.2/24 dev veth
+    echo_and_exec sudo ip netns exec $NAMESPACE ip link set dev veth up
+    echo_and_exec sudo ip addr add 10.0.$NAMESPACE_NR.1/24 dev veth$NAMESPACE_NR
+    echo_and_exec sudo ip link set dev veth$NAMESPACE_NR up
+    echo_and_exec sudo ip netns exec $NAMESPACE ip route add default via 10.0.$NAMESPACE_NR.1
+  fi
+  if error=`! sudo ip netns exec $NAMESPACE ip link show $TAP_DEVICE 2>&1`; then
+    echo "tap device $TAP_DEVICE in namespace $NAMESPACE not configured ($error)"
+    echo "Running:"
+    # tap in namespace
+    echo_and_exec sudo ip netns exec $NAMESPACE ip tuntap add name $TAP_DEVICE mode tap
+    echo_and_exec sudo ip netns exec $NAMESPACE ip addr add 172.16.$TAP_DEVICE_NR.1/24 dev $TAP_DEVICE
+    echo_and_exec sudo ip netns exec $NAMESPACE ip link set $TAP_DEVICE up
     # iptables
-    sudo ip netns exec fc$NAMESPACE iptables -t nat -A POSTROUTING -o veth -s 172.16.$TAP_DEVICE_NR.2 -j SNAT --to 172.17.$NAMESPACE.2
-    sudo ip netns exec fc$NAMESPACE iptables -t nat -A PREROUTING -i veth -d 172.17.$NAMESPACE.2 -j DNAT --to 172.16.$TAP_DEVICE_NR.2
-    sudo ip route add 172.17.$NAMESPACE.2 via 10.0.$NAMESPACE.2
+    echo_and_exec sudo ip netns exec $NAMESPACE iptables -t nat -A POSTROUTING -o veth -s 172.16.$TAP_DEVICE_NR.2 -j SNAT --to 172.17.$NAMESPACE_NR.2
+    echo_and_exec sudo ip netns exec $NAMESPACE iptables -t nat -A PREROUTING -i veth -d 172.17.$NAMESPACE_NR.2 -j DNAT --to 172.16.$TAP_DEVICE_NR.2
+    echo_and_exec sudo ip route add 172.17.$NAMESPACE_NR.2 via 10.0.$NAMESPACE_NR.2
   fi
 }
 
 if [[ -v NAMESPACE ]]; then
-  setup_namespace
-  NAMESPACE_NAME="-fc$NAMESPACE"
-  # We do `sudo -v` here because later we will use `NAMESPACE_CMD`
-  # to prefix commands which will be started in the background.
-  sudo -v
-  NAMESPACE_CMD="sudo ip netns exec fc$NAMESPACE sudo -u $USER "
+  NAMESPACE_NR=`echo $NAMESPACE | grep -oP '^[0-9]{1,3}$'`
+  if [[ "$NAMESPACE_NR" != "" && $NAMESPACE_NR -lt 256 ]]; then
+    NAMESPACE_NR=$( printf "%d" $NAMESPACE_NR )
+    NAMESPACE="fc$NAMESPACE_NR"
+  else
+    echo "NAMESPACE must be a number between 0 and 255 (was '$NAMESPACE')"
+    exit 1
+  fi
+  # For the kill command, we don't have to setup network namespaces.
+  # We just need the correct, namespace-awere Firecracker socket file.
+  if [[ ! -v KILL ]]; then
+    setup_namespace
+    # We do `sudo -v` here because later we will use `NAMESPACE_CMD`
+    # to prefix commands which will be started in the background.
+    sudo -v
+  fi
+  NAMESPACE_SUFFIX="-$NAMESPACE"
+  NAMESPACE_CMD="sudo ip netns exec $NAMESPACE sudo -u $USER "
 fi
 
-FC_SOCKET=${FC_SOCKET:-"/tmp/fireCRaCer-${TAP_DEVICE}${NAMESPACE_NAME}.socket"}
+FC_SOCKET=${FC_SOCKET:-"/tmp/fireCRaCer-${TAP_DEVICE}${NAMESPACE_SUFFIX}.socket"}
 FC_VSOCK=${FC_VSOCK:-"/tmp/fireCRaCer-$TAP_DEVICE.vsock"}
 
 check_http_response() {
@@ -183,7 +217,7 @@ check_http_response() {
 }
 
 if [[ -v KILL ]]; then
-  echo "Killing firecracker instance running on tap device $TAP_DEVICE"
+  echo "Killing firecracker instance running on tap device $TAP_DEVICE $NAMESPACE"
   ret=$(curl --write-out '%{http_code}' \
              --silent \
              --output /dev/null \
@@ -238,7 +272,7 @@ if [[ -v SNAPSHOT ]]; then
 fi
 
 if [[ -v LOGGING ]]; then
-  LOG_PATH=${LOG_PATH:-"/tmp/fireCRaCer-${TAP_DEVICE}${NAMESPACE_NAME}.log"}
+  LOG_PATH=${LOG_PATH:-"/tmp/fireCRaCer-${TAP_DEVICE}${NAMESPACE_SUFFIX}.log"}
   LOG_LEVEL=${LOG_LEVEL:-"Info"}
   LOG_SHOW_LEVEL=${LOG_SHOW_LEVEL:-"true"}
   LOG_SHOW_ORIGIN=${LOG_SHOW_ORIGIN:-"true"}
@@ -272,13 +306,13 @@ if [[ -v RESTORE ]]; then
   fi
   if [[ -v USERFAULTFD ]]; then
     if [[ $USERFAULTFD = "1" ]]; then
-      USERFAULTFD="/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_NAME}.log"
+      USERFAULTFD="/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_SUFFIX}.log"
     fi
     if [ ! -f "$UFFD_HANDLER" ]; then
       echo "Error: can't access userfaultfd daemon at $UFFD_HANDLER"
       exit 1
     fi
-    UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_NAME}.socket"}
+    UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_SUFFIX}.socket"}
     rm -f $UFFD_SOCKET
     echo "Running: $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1"
     $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1 &

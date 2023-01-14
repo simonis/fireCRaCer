@@ -19,7 +19,7 @@ This will use another Docker container (see [`./Dockerfile.ubuntu22`](./Dockerfi
 $ ./fireCRaCer.sh
 /dev/kvm not readable! This is required to run firecracker.
 running: setfacl -m u:ubuntu:rw /dev/kvm
-tap device TAP_DEVICE=tap0 not configured (Device "tap0" does not exist.)
+tap device tap0 not configured (Device "tap0" does not exist.)
 Running:
   sudo ip tuntap add dev tap0 mode tap
   sudo ip addr add 172.16.0.1/24 dev tap0
