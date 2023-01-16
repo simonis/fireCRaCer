@@ -10,8 +10,12 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.Vector;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import java.awt.BorderLayout;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -26,7 +30,6 @@ import java.awt.event.ActionListener;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseListener;
 import java.awt.image.BufferedImage;
-
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.ImageIcon;
@@ -34,7 +37,6 @@ import javax.swing.JButton;
 import javax.swing.JFormattedTextField;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
-import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
@@ -44,8 +46,6 @@ import javax.swing.JTree;
 import javax.swing.ListSelectionModel;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.ToolTipManager;
-import javax.swing.event.ListSelectionEvent;
-import javax.swing.event.ListSelectionListener;
 import javax.swing.event.TreeModelListener;
 import javax.swing.event.TreeSelectionEvent;
 import javax.swing.event.TreeSelectionListener;
@@ -60,7 +60,8 @@ class Colors {
     public static Color MEMORY = Color.getColor("uffdVisualizer.memoryColor", Color.GRAY);
     public static Color SELECTED = Color.getColor("uffdVisualizer.selectedColor", Color.DARK_GRAY);
     public static Color SHARED = Color.getColor("uffdVisualizer.sharedColor", 0x4D7A97);
-    public static Color LOADED = Color.getColor("uffdVisualizer.loadedColor", Color.ORANGE);
+    public static Color LOADED_SELECTED = Color.getColor("uffdVisualizer.loadedColor", Color.ORANGE);
+    public static Color LOADED = Color.getColor("uffdVisualizer.loadedColor", Color.YELLOW);
     public static Color NEW = Color.getColor("uffdVisualizer.sharedColor", Color.BLUE);
 }
 
@@ -69,16 +70,49 @@ record PidVirtual (
     long virtual) {
 }
 
-record VirtualMapping (
-    long start, // inclusive
-    long end,   // exclusive
-    String info) {
+class VirtualMapping {
+    private long start; // inclusive
+    private long end;   // exclusive
+    private String info;
     public VirtualMapping(long start, long end) {
         this(start, end, null);
+    }
+    public VirtualMapping(long start, long end, String info) {
+        this.start = start;
+        this.end = end;
+        this.info = info;
+    }
+    public long start() {
+        return start;
+    }
+    public long end() {
+        return end;
+    }
+    public String info() {
+        return info;
+    }
+    public boolean contains(long address) {
+        return Long.compareUnsigned(start, address) <= 0 && Long.compareUnsigned(address, end) < 0;
     }
     @Override
     public String toString() {
         return String.format("%#018x-%#018x", start, end);
+    }
+}
+
+class ReservedMapping extends VirtualMapping {
+    private Vector<VirtualMapping> committedMappings;
+    public ReservedMapping(long start, long end, String info) {
+        super(start, end, info);
+    }
+    public void addCommittedMapping(VirtualMapping vm) {
+        if (committedMappings == null) {
+            committedMappings = new Vector<>();
+        }
+        committedMappings.add(vm);
+    }
+    public Vector<VirtualMapping> committedMappings() {
+        return committedMappings;
     }
 }
 
@@ -145,7 +179,7 @@ class MemMapTreeModel implements TreeModel {
     private static final String ROOT = "ROOT";
     private HashMap<Integer, String> processMapping;
     private HashMap<Integer, Vector<VirtualMapping>> virtualMappings;
-    private Object nmtMappings;
+    private HashMap<Integer, Vector<VirtualMapping>> nmtMappings;
     private Vector<Process> processes = new Vector<>();
 
     static class Process {
@@ -203,14 +237,17 @@ class MemMapTreeModel implements TreeModel {
         }
     }
 
-    public MemMapTreeModel(HashMap<Integer, String> processMapping, HashMap<Integer, Vector<VirtualMapping>> virtualMappings) {
+    public MemMapTreeModel(HashMap<Integer, String> processMapping,
+                           HashMap<Integer, Vector<VirtualMapping>> virtualMappings,
+                           HashMap<Integer, Vector<VirtualMapping>> nmtMappings) {
         this.processMapping = processMapping;
         this.virtualMappings = virtualMappings;
-        this.nmtMappings = null;
+        this.nmtMappings = nmtMappings;
         processes = new Vector<>();
         processMapping.forEach((pid, exe) -> {
             int slash = exe.lastIndexOf('/');
-            processes.add(new Process(pid + ": " + (slash == -1 ? exe : exe.substring(slash + 1)), pid, nmtMappings == null ? 1 : 2));
+            processes.add(new Process(pid + ": " + (slash == -1 ? exe : exe.substring(slash + 1)),
+                                      pid, nmtMappings.get(pid) == null ? 1 : 2));
         });
         processes.sort(Comparator.comparing(p -> Integer.valueOf(p.toString().substring(0, p.toString().indexOf(':')))));
     }
@@ -224,7 +261,9 @@ class MemMapTreeModel implements TreeModel {
         } else if (parent instanceof Pmap) {
             return virtualMappings.get(((Pmap)parent).process().pid()).get(index);
         } else if (parent instanceof NMT) {
-            return "NMT_ERROR";
+            return nmtMappings.get(((NMT)parent).process().pid()).get(index);
+        } else if (parent instanceof ReservedMapping) {
+            return ((ReservedMapping)parent).committedMappings().get(index);
         } else {
             return "ERROR";
         }
@@ -240,7 +279,10 @@ class MemMapTreeModel implements TreeModel {
         } else if (parent instanceof Pmap) {
             return virtualMappings.get(((Pmap)parent).process().pid()).size();
         } else if (parent instanceof NMT) {
-            return 0;
+            return nmtMappings.get(((NMT)parent).process().pid()).size();
+        } else if (parent instanceof ReservedMapping) {
+            Vector<VirtualMapping> cm = ((ReservedMapping)parent).committedMappings();
+            return (cm == null) ? 0 : cm.size();
         } else {
             return 0;
         }
@@ -255,7 +297,9 @@ class MemMapTreeModel implements TreeModel {
         } else if (parent instanceof Pmap) {
             return virtualMappings.get(((Pmap)parent).process().pid()).indexOf(child);
         } else if (parent instanceof NMT) {
-            return 0;
+            return nmtMappings.get(((NMT)parent).process().pid()).indexOf(child);
+        } else if (parent instanceof ReservedMapping) {
+            return ((ReservedMapping)parent).committedMappings().indexOf(child);
         } else {
             return 0;
         }
@@ -268,7 +312,9 @@ class MemMapTreeModel implements TreeModel {
 
     @Override
     public boolean isLeaf(Object node) {
-        if (node instanceof VirtualMapping || node instanceof NMT) {
+        if (node instanceof ReservedMapping) {
+            return ((ReservedMapping)node).committedMappings() == null;
+        } else if (node instanceof VirtualMapping) {
             return true;
         } else {
             return false;
@@ -351,12 +397,11 @@ class PhysicalMemory extends JPanel {
 
 
 
-class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSelectionListener, ActionListener, MouseListener {
+class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionListener, MouseListener {
     private PhysicalMapping physicalMapping;
     private HashMap<Integer, TreeMap<Long, Long>> v2pMappings;
     private UffdState uffdState;
     private int uffdIndex;
-    private JList<String> processList;
     private JTree processTree;
     private PhysicalMemory physicalMemory;
     private JButton rewindButton, forwardButton, playButton;
@@ -365,7 +410,7 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
     private BufferedImage baseImage, pidImage, uffdImage;
     private Thread replayThread;
     private volatile int replayState = ReplayThreadState.STOP;
-    private int pid;
+    //private int pid;
 
     private BufferedImage createEmptyImage() {
         final long memory = UffdVisualizer.memory;
@@ -402,7 +447,7 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
         g2d.drawImage(baseImage, 0, 0, null);
         for (var entry : v2pMappings.get(pid).entrySet()) {
             long virtAddr = entry.getKey();
-            if (vm == null || (virtAddr >= vm.start() && virtAddr < vm.end())) {
+            if (vm == null || vm.contains(virtAddr)) {
                 long physAddr = entry.getValue();
                 int x = (((int)(physAddr % (pageSize * width))) / pageSize) * scale;
                 int y = (int)(physAddr / (pageSize * width)) * scale;
@@ -419,6 +464,7 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
 
     public PhysicalViewPanel(HashMap<Integer, String> processMapping,
                              HashMap<Integer, Vector<VirtualMapping>> virtualMappings,
+                             HashMap<Integer, Vector<VirtualMapping>> nmtMappings,
                              HashMap<Integer, TreeMap<Long, Long>> v2pMappings,
                              PhysicalMapping physicalMapping,
                              UffdState uffdState) {
@@ -426,14 +472,7 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
         this.physicalMapping = physicalMapping;
         this.v2pMappings = v2pMappings;
         this.uffdState = uffdState;
-        Vector<String> processes = new Vector<>();
-        processMapping.forEach((pid, exe) -> {
-            int slash = exe.lastIndexOf('/');
-            processes.add(pid + ": " + (slash == -1 ? exe : exe.substring(slash + 1)));
-        });
-        processes.sort(Comparator.comparing(s -> Integer.valueOf(s.substring(0, s.indexOf(':')))));
-        processList = new JList(processes);
-        MemMapTreeModel treeModel = new MemMapTreeModel(processMapping, virtualMappings);
+        MemMapTreeModel treeModel = new MemMapTreeModel(processMapping, virtualMappings, nmtMappings);
         processTree = new JTree(treeModel);
         processTree.setFont(new Font(Font.MONOSPACED, Font.PLAIN, processTree.getFont().getSize()));
         processTree.setRootVisible(false);
@@ -442,15 +481,31 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
         processTree.setEditable(false);
         processTree.addTreeSelectionListener(this);
         processTree.addMouseListener(this);
+        processTree.setCellRenderer(new DefaultTreeCellRenderer() {
+            {
+                setClosedIcon(null);
+                setOpenIcon(null);
+                setLeafIcon(null);
+            }
+            @Override
+            public Component getTreeCellRendererComponent(JTree tree, Object value, boolean sel, boolean expanded,
+                                                          boolean leaf, int row, boolean hasFocus) {
+                final Component rc = super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
+                if (value instanceof VirtualMapping) {
+                    this.setToolTipText(((VirtualMapping)value).info ());
+                } else {
+                    this.setToolTipText(null);
+                }
+                return rc;
+            }
+        });
         DefaultTreeCellRenderer dtcr = (DefaultTreeCellRenderer)processTree.getCellRenderer();
         dtcr.setClosedIcon(null);
         dtcr.setOpenIcon(null);
         dtcr.setLeafIcon(null);
-        processList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        processList.addListSelectionListener(this);
-        JScrollPane processListScrollPane = new JScrollPane(processTree);
-        processList.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+        JScrollPane processTreeScrollPane = new JScrollPane(processTree);
         processTree.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
+        ToolTipManager.sharedInstance().registerComponent(processTree);
 
         baseImage = createBaseImage(physicalMapping);
         physicalMemory = new PhysicalMemory(physicalMapping, v2pMappings, processMapping, baseImage);
@@ -487,36 +542,35 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
 
 
         this.add(pysicalMemoryScrollPane, BorderLayout.CENTER);
-        this.add(processListScrollPane, BorderLayout.LINE_END);
+        this.add(processTreeScrollPane, BorderLayout.LINE_END);
         this.add(controlPanel, BorderLayout.PAGE_END);
         // Start with kernel pages selected
-        processList.setSelectedIndex(1);
         processTree.setSelectionRow(1);
+    }
+
+    private VirtualMapping getSelectedVirtualMapping(TreePath tp) {
+        if (tp == null) {
+            tp = processTree.getSelectionPath();
+        }
+        VirtualMapping vm = null;
+        if (tp.getLastPathComponent() instanceof VirtualMapping) {
+            vm = (VirtualMapping)tp.getLastPathComponent();
+        }
+        return vm;
+    }
+
+    private int getSelectedPid(TreePath tp) {
+        if (tp == null) {
+            tp = processTree.getSelectionPath();
+        }
+        return ((MemMapTreeModel.Process)tp.getPathComponent(1)).pid();
     }
 
     @Override
     public void valueChanged(TreeSelectionEvent e) {
         TreePath tp = e.getPath();
-        pid = ((MemMapTreeModel.Process)tp.getPathComponent(1)).pid();
-        VirtualMapping vm = null;
-        if (tp.getLastPathComponent() instanceof VirtualMapping) {
-            vm = (VirtualMapping)tp.getLastPathComponent();
-        }
-        pidImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, vm);
-        physicalMemory.setImage(pidImage);
-        playButton.setActionCommand("play");
-        playButton.setIcon(playIcon);
-        replayThread = null;
-        uffdIndex = 0;
-        uffdField.setValue(uffdIndex);
-    }
-
-    @Override
-    public void valueChanged(ListSelectionEvent e) {
-        JList<String> list = (JList<String>)e.getSource();
-        String listElement = list.getSelectedValue();
-        pid = Integer.parseInt(listElement.substring(0, listElement.indexOf(':')));
-        pidImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, null);
+        pidImage = createPidImage(baseImage, physicalMapping, v2pMappings,
+                                  getSelectedPid(tp), getSelectedVirtualMapping(tp));
         physicalMemory.setImage(pidImage);
         playButton.setActionCommand("play");
         playButton.setIcon(playIcon);
@@ -553,7 +607,9 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
                 playButton.setActionCommand("pause");
                 playButton.setIcon(pauseIcon);
                 if (replayThread == null) {
-                    uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, null);
+                    VirtualMapping vm = getSelectedVirtualMapping(null);
+                    int pid = getSelectedPid(null);
+                    uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, vm);
                     Graphics2D g2d = uffdImage.createGraphics();
                     uffdIndex = 0;
                     replayThread = new Thread() {
@@ -570,13 +626,17 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
                                             if (pids != null) {
                                                 for (PidVirtual pv : pids) {
                                                     if (pv.pid() == pid) {
-                                                        selected = true;
+                                                        if (vm == null || vm.contains(pv.virtual())) {
+                                                            selected = true;
+                                                        }
                                                         break;
                                                     }
                                                 }
-                                            }
-                                            if (selected) {
-                                                g2d.setColor(Colors.LOADED);
+                                                if (selected) {
+                                                    g2d.setColor(Colors.LOADED_SELECTED);
+                                                } else {
+                                                    g2d.setColor(Colors.LOADED);
+                                                }
                                             } else {
                                                 g2d.setColor(Colors.NEW);
                                             }
@@ -626,7 +686,8 @@ class PhysicalViewPanel extends JPanel implements ListSelectionListener, TreeSel
             replayThread = null;
             uffdIndex = 0;
             uffdField.setValue(uffdIndex);
-            physicalMemory.setImage(createPidImage(baseImage, physicalMapping, v2pMappings, pid, null));
+            physicalMemory.setImage(createPidImage(baseImage, physicalMapping, v2pMappings,
+                                    getSelectedPid(null), getSelectedVirtualMapping(null)));
         } else if (e.getSource().equals(forwardButton)) {
 
         }
@@ -643,7 +704,9 @@ public class UffdVisualizer {
     private PhysicalMapping physicalMapping;
     // Per process list of all virtual mappings
     private HashMap<Integer, Vector<VirtualMapping>> virtualMappings;
-    // Per proecss list of all virtual to physical mappings
+    // Per Java process list of NMT mappings
+    private HashMap<Integer, Vector<VirtualMapping>> nmtMappings;
+    // Per process list of all virtual to physical mappings
     private HashMap<Integer, TreeMap<Long, Long>> v2pMappings;
     // Pid to executable mapping
     private HashMap<Integer, String> processMapping;
@@ -652,17 +715,19 @@ public class UffdVisualizer {
     private int uffdEntries = 0;
     private int uffdLoading = 0;
     private int uffdZeroing = 0;
-    private int pid;
 
-    private void processMappingsLine(String line) {
+    static class ProcessMappingsState {
+        int pid;
+    }
+    private void processMappingsLine(ProcessMappingsState pms, String line) {
         String fields[] = line.split(" ");
         if ("=".equals(fields[0])) {
-            pid = Integer.parseInt(fields[1]);
-            processMapping.put(pid, fields[2]);
-            virtualMappings.put(pid, new Vector<VirtualMapping>());
-            v2pMappings.put(pid, new TreeMap<Long, Long>());
+            pms.pid = Integer.parseInt(fields[1]);
+            processMapping.put(pms.pid, fields[2]);
+            virtualMappings.put(pms.pid, new Vector<VirtualMapping>());
+            v2pMappings.put(pms.pid, new TreeMap<Long, Long>());
         } else if ("v".equals(fields[0])) {
-            virtualMappings.get(pid).add(
+            virtualMappings.get(pms.pid).add(
                 new VirtualMapping(
                     Long.parseUnsignedLong(fields[1], 2, 18, 16),
                     Long.parseUnsignedLong(fields[2], 2, 18, 16),
@@ -670,12 +735,12 @@ public class UffdVisualizer {
         } else if ("p".equals(fields[0])) {
             long virtual = Long.parseUnsignedLong(fields[1], 2, 18, 16);
             long physical = Long.parseUnsignedLong(fields[2], 2, 18, 16);
-            if (pid <= 0) {
+            if (pms.pid <= 0) {
                 // Kernel addresses are all physical addresses
                 physical = virtual;
             }
-            physicalMapping.put(physical, pid, virtual);
-            v2pMappings.get(pid).put(virtual, physical);
+            physicalMapping.put(physical, pms.pid, virtual);
+            v2pMappings.get(pms.pid).put(virtual, physical);
         }
     }
 
@@ -702,14 +767,55 @@ public class UffdVisualizer {
         }
     }
 
-    public UffdVisualizer(File mappings, File uffd) {
-        long start = System.currentTimeMillis();
+    static class NMTLogParserState {
+        static final int INIT = 0;
+        static final int PID = 1;
+        static final int VIRTUAL = 2;
+        static final int END = 3;
+        int state = INIT;
+        int pid = 0;
+        Vector<VirtualMapping> vm;
+        Matcher matcher = Pattern.compile("\\[0x(\\p{XDigit}+) - 0x(\\p{XDigit}+)\\] (.+) from").matcher("");
+    }
+    private void processNMTLine(NMTLogParserState ps, String line) {
+        if (ps.state == NMTLogParserState.INIT) {
+            try {
+                ps.pid = Integer.parseInt(line.substring(0, line.indexOf(':')));
+            } catch (NumberFormatException nfe) {
+                System.err.println("NMT Parse Error: NMT file ust start with a '<pid>:' line.");
+            }
+            ps.state = NMTLogParserState.PID;
+        }
+        else if (ps.state == NMTLogParserState.PID) {
+            if ("Virtual memory map:".equals(line)) {
+                ps.state = NMTLogParserState.VIRTUAL;
+                ps.vm = new Vector<>();
+            }
+        }
+        else if (ps.state == NMTLogParserState.VIRTUAL) {
+            if (line.startsWith("[0x") && ps.matcher.reset(line).matches()) {
+                ps.vm.add(new ReservedMapping(Long.parseUnsignedLong(ps.matcher.group(1), 16),
+                                              Long.parseUnsignedLong(ps.matcher.group(2), 16),  ps.matcher.group(3)));
+            } else if (line.startsWith("\t") && ps.matcher.reset(line.trim()).matches()) {
+                ReservedMapping rm = (ReservedMapping)ps.vm.lastElement();
+                rm.addCommittedMapping(new VirtualMapping(Long.parseUnsignedLong(ps.matcher.group(1), 16),
+                                                          Long.parseUnsignedLong(ps.matcher.group(2), 16),  ps.matcher.group(3)));
+            } else if (line.startsWith("Details:")) {
+                ps.state = NMTLogParserState.END;
+            }
+        }
+    }
+
+    public UffdVisualizer(File mappings, File uffd, File nmt) {
         physicalMapping = new PhysicalMapping();
         virtualMappings = new HashMap<Integer, Vector<VirtualMapping>>();
+        nmtMappings = new HashMap<Integer, Vector<VirtualMapping>>();
         v2pMappings = new HashMap<Integer, TreeMap<Long, Long>>();
         processMapping = new HashMap<Integer, String>();
+        long start = System.currentTimeMillis();
         try {
-            Files.lines(mappings.toPath()).forEach(l -> processMappingsLine(l));
+            ProcessMappingsState pms = new ProcessMappingsState();
+            Files.lines(mappings.toPath()).forEach(l -> processMappingsLine(pms, l));
             long parsedMappings = System.currentTimeMillis();
 
             System.out.println(String.format("Parsed %d mappings for %d processes in %dms.",
@@ -729,11 +835,20 @@ public class UffdVisualizer {
             uffdPhysical = new long[(int)uffdLength];
             uffdFlags = new byte[(int)uffdLength];
             Files.lines(uffd.toPath()).forEach(l -> processUffdLine(l));
+            long parsedUffd = System.currentTimeMillis();
 
             System.out.println(String.format("Parsed %d UFFD events (%d pages / %dkb loaded,  %d pages / %dkb zeroed) in %dms.",
                                              uffdEntries, uffdLoading, (uffdLoading * pageSize) / 1024,
                                              uffdZeroing, (uffdZeroing * pageSize) / 1024,
-                                             System.currentTimeMillis() - parsedMappings));
+                                             parsedUffd - parsedMappings));
+
+            if (nmt != null) {
+                final NMTLogParserState ps = new NMTLogParserState();
+                Files.lines(nmt.toPath()).forEach(l -> processNMTLine(ps, l));
+                System.out.println(String.format("Parsed %d NMT mappings for Java process %d processes in %dms.",
+                                                 ps.vm.size(), ps.pid, System.currentTimeMillis() - parsedUffd));
+                nmtMappings.put(ps.pid, ps.vm);
+            }
         } catch (IOException ioe) {
             System.err.println(ioe);
             System.exit(-1);
@@ -742,8 +857,9 @@ public class UffdVisualizer {
 
     public void createFrame() {
         JTabbedPane tabbedPane = new JTabbedPane();
-        tabbedPane.addTab("Physical View", new PhysicalViewPanel(processMapping, virtualMappings, v2pMappings, physicalMapping,
-            new UffdState(uffdPhysical, uffdFlags, uffdEntries, uffdLoading, uffdZeroing)));
+        tabbedPane.addTab("Physical View",
+                          new PhysicalViewPanel(processMapping, virtualMappings, nmtMappings, v2pMappings, physicalMapping,
+                                                new UffdState(uffdPhysical, uffdFlags, uffdEntries, uffdLoading, uffdZeroing)));
         JFrame frame = new JFrame();
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.getContentPane().add(tabbedPane);
@@ -752,11 +868,11 @@ public class UffdVisualizer {
     }
 
     private static void help() {
-        System.out.println("\nio.simonis.UffdVisualizer <mapings-file> <uffd-file>\n");
+        System.out.println("\nio.simonis.UffdVisualizer <mapings-file> <uffd-file> [nmt-file]\n");
         System.exit(-1);
     }
     public static void main(String args[]) {
-        if (args.length != 2) {
+        if (args.length < 2 || args.length > 3) {
             help();
         }
         File mappings = new File(args[0]);
@@ -767,8 +883,16 @@ public class UffdVisualizer {
         if (!uffd.canRead()) {
             System.err.println("Can't read " + uffd);
         }
+        File nmt = null;
+        if (args.length == 3) {
+            nmt = new File(args[2]);
+            if (!nmt.canRead()) {
+                System.err.println("Can't read " + nmt);
+            }
+        }
         ToolTipManager.sharedInstance().setDismissDelay(Integer.MAX_VALUE);
-        UffdVisualizer uffdVisualizer = new UffdVisualizer(mappings, uffd);
+        ToolTipManager.sharedInstance().setInitialDelay(0);
+        UffdVisualizer uffdVisualizer = new UffdVisualizer(mappings, uffd, nmt);
         uffdVisualizer.createFrame();
     }
 }
