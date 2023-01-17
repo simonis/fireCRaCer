@@ -73,6 +73,8 @@ record PidVirtual (
 class VirtualMapping {
     private long start; // inclusive
     private long end;   // exclusive
+    private long rss;
+    private long reloaded;
     private String info;
     public VirtualMapping(long start, long end) {
         this(start, end, null);
@@ -90,6 +92,24 @@ class VirtualMapping {
     }
     public String info() {
         return info;
+    }
+    public long rss() {
+        return rss;
+    }
+    public long reloaded() {
+        return reloaded;
+    }
+    public long size() {
+        return end - start;
+    }
+    public void setPhysicalState(TreeMap<Long, Long> v2pMappings, PhysicalMapping pm) {
+        var mapped = v2pMappings.subMap(start, end);
+        rss = mapped.size() * UffdVisualizer.pageSize;
+        for (long physical : mapped.values()) {
+            if (pm.isReloaded(physical)) {
+                reloaded += UffdVisualizer.pageSize;
+            }
+        }
     }
     public boolean contains(long address) {
         return Long.compareUnsigned(start, address) <= 0 && Long.compareUnsigned(address, end) < 0;
@@ -114,8 +134,16 @@ class ReservedMapping extends VirtualMapping {
     public Vector<VirtualMapping> committedMappings() {
         return committedMappings;
     }
+    @Override
+    public String toString() {
+        return info();
+    }
 }
 
+// Maps a physical address to an Object array:
+//   Object[0]: an ArrayList of PidVirtual (i.e. the pids and the virtual address
+//              within that pid that map the corresponding physical address).
+//   Object[1]: the UffdFlags of the corresponding physical address
 class PhysicalMapping extends TreeMap<Long, Object[]> {
     public void put(long physical, int pid, long virtual) {
         Object objArr[] = this.get(physical);
@@ -152,6 +180,13 @@ class PhysicalMapping extends TreeMap<Long, Object[]> {
         }
         return (Byte)objArr[1];
     }
+    public boolean isReloaded(long physical) {
+        Byte uffdFlags = getUffdFlags(physical);
+        if (uffdFlags == null) {
+            return false;
+        }
+        return (uffdFlags & UffdFlags.SET) > 0;
+    }
 }
 
 // Bits to determine some of the uffd event attributes
@@ -167,12 +202,16 @@ final class UffdFlags {
     public static final int SET = 128;
 }
 
-record UffdState (
-    long[] uffdPhysical,
-    byte[] uffdFlags,
-    int uffdEntries,
-    int uffdLoading,
-    int uffdZeroing) {
+class UffdState {
+    long[] uffdPhysical;
+    byte[] uffdFlags;
+    int uffdEntries;
+    int uffdLoading;
+    int uffdZeroing;
+    public UffdState(long[] uffdPhysical, byte[] uffdFlags) {
+        this.uffdPhysical = uffdPhysical;
+        this.uffdFlags = uffdFlags;
+    }
 }
 
 class MemMapTreeModel implements TreeModel {
@@ -379,8 +418,8 @@ class PhysicalMemory extends JPanel {
                 sb.append(String.format("%d: %s (%#018x)<br/>", pid, processMapping.get(pid), pv.virtual()));
             }
         }
-        Byte uffdFlags = physicalMapping.getUffdFlags(address);
-        if (uffdFlags != null && (uffdFlags & UffdFlags.SET) > 0) {
+        if (physicalMapping.isReloaded(address)) {
+            Byte uffdFlags = physicalMapping.getUffdFlags(address);
             sb.append("<hr/>");
             sb.append(String.format("uffd event: %s<br/>", ((uffdFlags & UffdFlags.WRITE) > 0) ? "write" : "read" ));
             sb.append(String.format("uffd action: %s", ((uffdFlags & UffdFlags.LOAD) > 0) ? "load" : "zero" ));
@@ -476,7 +515,7 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
         processTree = new JTree(treeModel);
         processTree.setFont(new Font(Font.MONOSPACED, Font.PLAIN, processTree.getFont().getSize()));
         processTree.setRootVisible(false);
-        processTree.setShowsRootHandles(false);
+        processTree.setShowsRootHandles(true);
         processTree.getSelectionModel().setSelectionMode(TreeSelectionModel.SINGLE_TREE_SELECTION);
         processTree.setEditable(false);
         processTree.addTreeSelectionListener(this);
@@ -492,7 +531,17 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
                                                           boolean leaf, int row, boolean hasFocus) {
                 final Component rc = super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
                 if (value instanceof VirtualMapping) {
-                    this.setToolTipText(((VirtualMapping)value).info ());
+                    VirtualMapping vm = (VirtualMapping)value;
+                    String head = vm.info();
+                    if (vm instanceof ReservedMapping) {
+                        head = String.format("%#018x-%#018x", vm.start(), vm.end());
+                    }
+                    StringBuffer sb = new StringBuffer("<html><pre>" + head);
+                    sb.append("<hr/>");
+                    sb.append(String.format("virtual: %7dkb<br/>", vm.size() / 1024));
+                    sb.append(String.format("    rss: %7dkb<br/>", vm.rss() / 1024));
+                    sb.append(String.format("   uffd: %7dkb</pre></html>", vm.reloaded() / 1024));
+                    this.setToolTipText(sb.toString());
                 } else {
                     this.setToolTipText(null);
                 }
@@ -527,8 +576,8 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
         JLabel uffdLabel = new JLabel();
         uffdLabel.setText(
             String.format("<html><b>Userfaultfd:</b> %d events (%d pages / %dkb loaded,  %d pages / %dkb zeroed)</html>",
-                          uffdState.uffdEntries(), uffdState.uffdLoading(), (uffdState.uffdLoading() * UffdVisualizer.pageSize) / 1024,
-                          uffdState.uffdZeroing(), (uffdState.uffdZeroing() * UffdVisualizer.pageSize) / 1024));
+                          uffdState.uffdEntries, uffdState.uffdLoading, (uffdState.uffdLoading * UffdVisualizer.pageSize) / 1024,
+                          uffdState.uffdZeroing, (uffdState.uffdZeroing * UffdVisualizer.pageSize) / 1024));
         controlPanel.add(uffdLabel);
         uffdField = new JFormattedTextField();
         uffdField.setColumns(6);
@@ -617,8 +666,8 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
                             while (true) {
                                 switch (replayState) {
                                     case ReplayThreadState.PLAY : {
-                                        if (uffdIndex++ < uffdState.uffdEntries()) {
-                                            long address = uffdState.uffdPhysical()[uffdIndex];
+                                        if (uffdIndex++ < uffdState.uffdEntries) {
+                                            long address = uffdState.uffdPhysical[uffdIndex];
                                             int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
                                             int y = (int)(address / (pageSize * width)) * scale;
                                             ArrayList<PidVirtual> pids = physicalMapping.getPidVirtual(address);
@@ -640,7 +689,6 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
                                             } else {
                                                 g2d.setColor(Colors.NEW);
                                             }
-                                            physicalMapping.put(address, uffdState.uffdFlags()[uffdIndex]);
                                             g2d.drawRect(x, y, scale - 1, scale - 1);
                                             uffdField.setValue(uffdIndex);
                                             physicalMemory.setImage(uffdImage);
@@ -710,11 +758,7 @@ public class UffdVisualizer {
     private HashMap<Integer, TreeMap<Long, Long>> v2pMappings;
     // Pid to executable mapping
     private HashMap<Integer, String> processMapping;
-    private long[] uffdPhysical;
-    private byte[] uffdFlags;
-    private int uffdEntries = 0;
-    private int uffdLoading = 0;
-    private int uffdZeroing = 0;
+    private UffdState uffdState;
 
     static class ProcessMappingsState {
         int pid;
@@ -727,11 +771,15 @@ public class UffdVisualizer {
             virtualMappings.put(pms.pid, new Vector<VirtualMapping>());
             v2pMappings.put(pms.pid, new TreeMap<Long, Long>());
         } else if ("v".equals(fields[0])) {
+            String info = null;
+            if (fields.length > 3) {
+                info = line.substring(line.indexOf(fields[3]));
+            }
             virtualMappings.get(pms.pid).add(
                 new VirtualMapping(
                     Long.parseUnsignedLong(fields[1], 2, 18, 16),
                     Long.parseUnsignedLong(fields[2], 2, 18, 16),
-                    (fields.length > 3) ? fields[3] : null));
+                    info));
         } else if ("p".equals(fields[0])) {
             long virtual = Long.parseUnsignedLong(fields[1], 2, 18, 16);
             long physical = Long.parseUnsignedLong(fields[2], 2, 18, 16);
@@ -744,7 +792,7 @@ public class UffdVisualizer {
         }
     }
 
-    private void processUffdLine(String line) {
+    private void processUffdLine(UffdState uffdState, PhysicalMapping physicalMapping, String line) {
         // A line in the uffd log file looks as follows:
         // UFFD_EVENT_PAGEFAULT (r): 0x00007fffbbaa4000 0x00007fffbbaa4000  Loading: 0x0000000003cb5000 - 0x0000000003cb6000
         String fields[] = line.split(" +");
@@ -752,18 +800,20 @@ public class UffdVisualizer {
             return;
         }
         if ("UFFD_EVENT_PAGEFAULT".equals(fields[0])) {
-            int entry = uffdEntries++;
-            uffdPhysical[entry] = Long.parseUnsignedLong(fields[5], 2, 18, 16);
-            uffdFlags[entry] |= UffdFlags.PAGE | UffdFlags.SET;
+            int entry = uffdState.uffdEntries++;
+            long address = Long.parseUnsignedLong(fields[5], 2, 18, 16);
+            uffdState.uffdPhysical[entry] = address;
+            uffdState.uffdFlags[entry] |= UffdFlags.PAGE | UffdFlags.SET;
             if ("(w):".equals(fields[1])) {
-                uffdFlags[entry] |= UffdFlags.WRITE;
+                uffdState.uffdFlags[entry] |= UffdFlags.WRITE;
             }
             if ("Loading:".equals(fields[4])) {
-                uffdFlags[entry] |= UffdFlags.LOAD;
-                uffdLoading++;
+                uffdState.uffdFlags[entry] |= UffdFlags.LOAD;
+                uffdState.uffdLoading++;
             } else {
-                uffdZeroing++;
+                uffdState.uffdZeroing++;
             }
+            physicalMapping.put(address, uffdState.uffdFlags[entry]);
         }
     }
 
@@ -776,6 +826,7 @@ public class UffdVisualizer {
         int pid = 0;
         Vector<VirtualMapping> vm;
         Matcher matcher = Pattern.compile("\\[0x(\\p{XDigit}+) - 0x(\\p{XDigit}+)\\] (.+) from").matcher("");
+        Matcher reservedMatcher = Pattern.compile("\\[0x(\\p{XDigit}+) - 0x(\\p{XDigit}+)\\] .+ for (.+) from").matcher("");
     }
     private void processNMTLine(NMTLogParserState ps, String line) {
         if (ps.state == NMTLogParserState.INIT) {
@@ -793,13 +844,18 @@ public class UffdVisualizer {
             }
         }
         else if (ps.state == NMTLogParserState.VIRTUAL) {
-            if (line.startsWith("[0x") && ps.matcher.reset(line).matches()) {
-                ps.vm.add(new ReservedMapping(Long.parseUnsignedLong(ps.matcher.group(1), 16),
-                                              Long.parseUnsignedLong(ps.matcher.group(2), 16),  ps.matcher.group(3)));
+            VirtualMapping vm;
+            if (line.startsWith("[0x") && ps.reservedMatcher.reset(line).matches()) {
+                vm = new ReservedMapping(Long.parseUnsignedLong(ps.reservedMatcher.group(1), 16),
+                                         Long.parseUnsignedLong(ps.reservedMatcher.group(2), 16),  ps.reservedMatcher.group(3));
+                vm.setPhysicalState(v2pMappings.get(ps.pid), physicalMapping);
+                ps.vm.add(vm);
             } else if (line.startsWith("\t") && ps.matcher.reset(line.trim()).matches()) {
+                vm = new VirtualMapping(Long.parseUnsignedLong(ps.matcher.group(1), 16),
+                                        Long.parseUnsignedLong(ps.matcher.group(2), 16),  ps.matcher.group(3));
+                vm.setPhysicalState(v2pMappings.get(ps.pid), physicalMapping);
                 ReservedMapping rm = (ReservedMapping)ps.vm.lastElement();
-                rm.addCommittedMapping(new VirtualMapping(Long.parseUnsignedLong(ps.matcher.group(1), 16),
-                                                          Long.parseUnsignedLong(ps.matcher.group(2), 16),  ps.matcher.group(3)));
+                rm.addCommittedMapping(vm);
             } else if (line.startsWith("Details:")) {
                 ps.state = NMTLogParserState.END;
             }
@@ -832,16 +888,21 @@ public class UffdVisualizer {
                     break;
                 }
             } while (true);
-            uffdPhysical = new long[(int)uffdLength];
-            uffdFlags = new byte[(int)uffdLength];
-            Files.lines(uffd.toPath()).forEach(l -> processUffdLine(l));
+            uffdState = new UffdState(new long[(int)uffdLength], new byte[(int)uffdLength]);
+            Files.lines(uffd.toPath()).forEach(l -> processUffdLine(uffdState, physicalMapping, l));
             long parsedUffd = System.currentTimeMillis();
 
             System.out.println(String.format("Parsed %d UFFD events (%d pages / %dkb loaded,  %d pages / %dkb zeroed) in %dms.",
-                                             uffdEntries, uffdLoading, (uffdLoading * pageSize) / 1024,
-                                             uffdZeroing, (uffdZeroing * pageSize) / 1024,
+                                             uffdState.uffdEntries, uffdState.uffdLoading, (uffdState.uffdLoading * pageSize) / 1024,
+                                             uffdState.uffdZeroing, (uffdState.uffdZeroing * pageSize) / 1024,
                                              parsedUffd - parsedMappings));
 
+            for (var entry : virtualMappings.entrySet()) {
+                int pid = entry.getKey();
+                for (var vm : entry.getValue()) {
+                    vm.setPhysicalState(v2pMappings.get(pid), physicalMapping);
+                }
+            }
             if (nmt != null) {
                 final NMTLogParserState ps = new NMTLogParserState();
                 Files.lines(nmt.toPath()).forEach(l -> processNMTLine(ps, l));
@@ -858,8 +919,7 @@ public class UffdVisualizer {
     public void createFrame() {
         JTabbedPane tabbedPane = new JTabbedPane();
         tabbedPane.addTab("Physical View",
-                          new PhysicalViewPanel(processMapping, virtualMappings, nmtMappings, v2pMappings, physicalMapping,
-                                                new UffdState(uffdPhysical, uffdFlags, uffdEntries, uffdLoading, uffdZeroing)));
+                          new PhysicalViewPanel(processMapping, virtualMappings, nmtMappings, v2pMappings, physicalMapping, uffdState));
         JFrame frame = new JFrame();
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.getContentPane().add(tabbedPane);
