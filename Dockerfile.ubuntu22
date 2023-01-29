@@ -18,9 +18,10 @@ WORKDIR /deps
 #RUN tar -xzf criu-dist.tar.gz
 COPY /deps/jdk jdk-base
 RUN ./jdk-base/bin/jlink --add-modules ALL-MODULE-PATH --output jdk --strip-debug --no-man-pages --no-header-files --compress=2
-RUN git clone https://github.com/spring-projects/spring-petclinic.git
+#RUN git clone https://github.com/spring-projects/spring-petclinic.git
+RUN git clone --branch volkers-experiments --single-branch https://github.com/simonis/spring-petclinic.git
 WORKDIR spring-petclinic
-RUN mvn clean package
+RUN mvn -T0.8C clean package
 
 FROM base
 RUN apt-get install -y iproute2 openssh-server socat vim-tiny --no-install-recommends
@@ -41,6 +42,7 @@ COPY --from=deps --chown=crac:crac /deps/jdk /opt/jdk
 #RUN sudo chown root:root /opt/jdk/lib/criu
 #RUN chmod u+s /opt/jdk/lib/criu
 COPY --from=deps --chown=crac:crac /deps/spring-petclinic/target/spring-petclinic-*.jar /opt/jars/
+COPY --chown=crac:crac /deps/SuspendResumeAgent.jar /opt/jars/
 COPY --chown=crac:crac /tools/crac_init.sh /opt/tools/
 COPY --chown=crac:crac /tools/ro_init.sh /opt/tools/
 COPY --chown=crac:crac /tools/get_maps.sh /opt/tools/

@@ -938,16 +938,19 @@ public class UffdVisualizer {
         File mappings = new File(args[0]);
         if (!mappings.canRead()) {
             System.err.println("Can't read " + mappings);
+            System.exit(-1);
         }
         File uffd = new File(args[1]);
         if (!uffd.canRead()) {
             System.err.println("Can't read " + uffd);
+            System.exit(-1);
         }
         File nmt = null;
         if (args.length == 3) {
             nmt = new File(args[2]);
             if (!nmt.canRead()) {
                 System.err.println("Can't read " + nmt);
+                System.exit(-1);
             }
         }
         ToolTipManager.sharedInstance().setDismissDelay(Integer.MAX_VALUE);

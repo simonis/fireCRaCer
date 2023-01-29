@@ -11,7 +11,7 @@ This will build a linux kernel in a Docker container (see [`./Dockerfile.kernel`
 ```
 $ ./makeRootFS.sh
 ```
-This will use another Docker container (see [`./Dockerfile.ubuntu22`](./Dockerfile.ubuntu22)) to create an Ubuntu 22.04-based ext4 root file system in `./deps/rootfs.ext4` which contains a CRaC-enabled version of OpenJDK 17 (by default from https://firecracker-microvm.github.io/ and cached under `./deps/jdk`) and the [Spring Petclinic](https://github.com/spring-projects/spring-petclinic.git) demo application. It also builds a [Userfaultfd](https://docs.kernel.org/admin-guide/mm/userfaultfd.html) page fault handler to `.&deps/uffd_handler` (see [./tools/uffd/](./tools/uffd/)) which we will need [later for our experiments](#restoring-firecracker-with-userfaultfd).
+This will use another Docker container (see [`./Dockerfile.ubuntu22`](./Dockerfile.ubuntu22)) to create an Ubuntu 22.04-based ext4 root file system in `./deps/rootfs.ext4` which contains a CRaC-enabled version of OpenJDK 17 (by default from https://firecracker-microvm.github.io/ and cached under `./deps/jdk`) and a slightly customized version of the [Spring Petclinic](https://github.com/spring-projects/spring-petclinic.git) demo application from https://github.com/simonis/spring-petclinic/tree/volkers-experiments. It also builds a [Userfaultfd](https://docs.kernel.org/admin-guide/mm/userfaultfd.html) page fault handler to `./deps/uffd_handler` (see [./tools/uffd/](./tools/uffd/)), the [UffdVisualizer](./tools/UffdVisualizer/) to `./deps/UffdVisualizer.jar` and a simple [SuspendResume agent](./tools/SuspendResumeAgent/) to `deps/SuspendResumeAgent.jar` which we will need [later for our experiments](#restoring-firecracker-with-userfaultfd).
 
 #### Running Java/Petclinic in Firecracker
 
@@ -145,11 +145,17 @@ The `kernel` and `pagecache` sections are a little different, because they don't
 
 For the `pagecache` section there's a single virtual mapping line with the start and end address of the whole physical memory followed by (phsical page address / kernel page flags) pairs for every physical page which has the [`KPF_MAPPEDTODISK`](https://elixir.bootlin.com/linux/v6.0.11/source/include/linux/kernel-page-flags.h#L13) kernel page flag set.
 
-With these two files (i.e. `/tmp/mem_mapping1.txt` and `userfaultfd`'s output in `/tmp/fireCRaCer-uffd-tap0.log`) we can now start the page visualizer:
+The page visualizer can also use HotSpot's Native Memory Tracking ([NMT](https://docs.oracle.com/en/java/javase/17/vm/native-memory-tracking.html)) output to attribute memory to the various NMT categories. In order to get the NMT data we have to start the Java process in the Firecracker container with `-XX:NativeMemoryTracking=detail`. This can be achieved by passing the java command line parameter through `BOOT_ARGS` like so: `BOOT_ARGS="sshd=true FC_JAVA_OPTIONS=\"-XX:NativeMemoryTracking=detail\""` (`FC_JAVA_OPTIONS` will be appended to the Java options by the `crac_init.sh` script from inside the Firecracker image when starting Petclinic). We can then `ssh` into the Firecracker VM one more time to call `jcmd` as follows:
 ```
-$ java -DuffdVisualizer.scale=4 -cp tools/UffdVisualizer/src:tools/UffdVisualizer/deps/jlfgr-1_0.jar io.simonis.UffdVisualizer /tmp/mem_mapping1.txt /tmp/fireCRaCer-uffd-tap0.log
+ssh -i ./docker/firecracker_id_rsa root@172.16.0.2 '/opt/jdk/bin/jcmd spring-petclinic VM.native_memory detail' > /tmp/nmt.log
+```
+
+With these three files (i.e. `/tmp/mem_mapping1.txt`, `userfaultfd`'s output in `/tmp/fireCRaCer-uffd-tap0.log` and the detailed NMT output in `/tmp/nmt.log`) we can now start the page visualizer:
+```
+$ java -DuffdVisualizer.scale=4 -jar ./deps/UffdVisualizer.jar /tmp/mem_mapping1.txt /tmp/fireCRaCer-uffd-tap0.log /tmp/nmt.log
 Parsed 87629 mappings for 5 processes in 194ms.
 Parsed 9651 UFFD events (9650 pages / 38600kb loaded,  1 pages / 4kb zeroed) in 66ms.
+Parsed 55 NMT mappings for Java process 219 processes in 66ms.
 ...
 ```
 

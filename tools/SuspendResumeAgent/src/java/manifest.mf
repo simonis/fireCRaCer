@@ -1,0 +1,4 @@
+manifest-Version: 1.0
+Premain-Class: io.simonis.SuspendResumeAgent
+Can-Retransform-Classes: false                                    
+Can-Redefine-Classes: false

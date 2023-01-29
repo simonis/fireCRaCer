@@ -78,6 +78,23 @@ else
   echo "Using cached JDK from $MYPATH/deps/jdk"
 fi
 
+# Build SuspendResumeAgent
+if [[ ! -f "$MYPATH/deps/SuspendResumeAgent" ]]; then
+  echo "Building deps/SuspendResumeAgent.jar"
+  mkdir -p $MYPATH/deps/SuspendResumeAgent
+  $MYPATH/deps/jdk/bin/javac -d $MYPATH/deps/SuspendResumeAgent \
+                             $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/SuspendResumeAgent.java \
+                             $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/crac/*.java \
+                             $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/crac/impl/*.java
+  g++ -fPIC -shared -I $MYPATH/deps/jdk/include/ -I $MYPATH/deps/jdk/include/linux/ \
+      -o $MYPATH/deps/SuspendResumeAgent/libSuspendResumeAgent.so \
+      $MYPATH/tools/SuspendResumeAgent/src/cpp/SuspendResumeAgent.cpp
+  $MYPATH/deps/jdk/bin/jar -vcfm $MYPATH/deps/SuspendResumeAgent.jar \
+                           $MYPATH/tools/SuspendResumeAgent/src/java/manifest.mf \
+                           -C $MYPATH/deps/SuspendResumeAgent .
+  rm -rf $MYPATH/deps/SuspendResumeAgent
+fi
+
 # dd if=/dev/zero of=$ROOTFS_FILE bs=1M count=1024
 rm -rf $ROOTFS_FILE
 truncate -s ${ROOTFS_SIZE}M $ROOTFS_FILE
@@ -90,7 +107,9 @@ docker_id=$(docker run -it --rm --detach $DOCKER_IMG)
 docker cp --archive $docker_id:/ - | sudo tar -xf - --same-owner -C $MOUNT_DIR
 docker kill $docker_id
 
+# Build uffd_handler
 if [[ ! -f "$MYPATH/deps/uffd_handler" ]]; then
+  echo "Building deps/uffd_handler.jar"
   docker run --rm \
          -v $MYPATH/deps:/output \
          -v "$MYPATH/tools/uffd":/usr/src/myapp \
@@ -103,4 +122,14 @@ if [[ ! -f "$MYPATH/deps/uffd_handler" ]]; then
            cargo build --release --bin uffd_handler --target-dir /tmp/cargo_target_dir;
            cp /tmp/cargo_target_dir/release/uffd_handler /output;
            chown $(id -u):$(id -g) /output/uffd_handler"
+fi
+
+# Build UffdVisualizer
+if [[ ! -f "$MYPATH/deps/UffdVisualizer" ]]; then
+  echo "Building deps/UffdVisualizer.jar"
+  mkdir -p $MYPATH/deps/UffdVisualizer
+  $MYPATH/deps/jdk/bin/javac -d $MYPATH/deps/UffdVisualizer $MYPATH/tools/UffdVisualizer/src/io/simonis/UffdVisualizer.java
+  unzip $MYPATH/tools/UffdVisualizer/deps/jlfgr-1_0.jar toolbarButtonGraphics/media/* -d $MYPATH/deps/UffdVisualizer
+  $MYPATH/deps/jdk/bin/jar -vcfe $MYPATH/deps/UffdVisualizer.jar io.simonis.UffdVisualizer -C $MYPATH/deps/UffdVisualizer .
+  rm -rf $MYPATH/deps/UffdVisualizer
 fi
