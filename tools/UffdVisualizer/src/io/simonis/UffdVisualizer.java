@@ -825,7 +825,7 @@ public class UffdVisualizer {
         int state = INIT;
         int pid = 0;
         Vector<VirtualMapping> vm;
-        Matcher matcher = Pattern.compile("\\[0x(\\p{XDigit}+) - 0x(\\p{XDigit}+)\\] (.+) from").matcher("");
+        Matcher matcher = Pattern.compile("\t\\[0x(\\p{XDigit}+) - 0x(\\p{XDigit}+)\\] (committed [^ ]+) (?:from)?$").matcher("");
         Matcher reservedMatcher = Pattern.compile("\\[0x(\\p{XDigit}+) - 0x(\\p{XDigit}+)\\] .+ for (.+) from").matcher("");
     }
     private void processNMTLine(NMTLogParserState ps, String line) {
@@ -850,7 +850,7 @@ public class UffdVisualizer {
                                          Long.parseUnsignedLong(ps.reservedMatcher.group(2), 16),  ps.reservedMatcher.group(3));
                 vm.setPhysicalState(v2pMappings.get(ps.pid), physicalMapping);
                 ps.vm.add(vm);
-            } else if (line.startsWith("\t") && ps.matcher.reset(line.trim()).matches()) {
+            } else if (line.startsWith("\t") && ps.matcher.reset(line).matches()) {
                 vm = new VirtualMapping(Long.parseUnsignedLong(ps.matcher.group(1), 16),
                                         Long.parseUnsignedLong(ps.matcher.group(2), 16),  ps.matcher.group(3));
                 vm.setPhysicalState(v2pMappings.get(ps.pid), physicalMapping);

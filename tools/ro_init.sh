@@ -3,6 +3,7 @@
 # Based on https://github.com/firecracker-microvm/firecracker-containerd/blob/main/tools/image-builder/files_debootstrap/sbin/overlay-init
 
 # Trigger timestamp in FireCracker log file on the host to get boot time
+echo "Trigger FireCracker timestamp" > /dev/kmsg
 /opt/tools/fc_log_timestamp
 
 # The directory where the overlay file system will be mounted to

@@ -1,5 +1,8 @@
 // Based on https://github.com/firecracker-microvm/firecracker/blob/main/resources/tests/init.c
 
+// Notice that the boot timer only works if Firecracker was started with `--boot-timer` and
+// boot timer support was removed entirely when restoring from a snapshot (see:
+// https://github.com/firecracker-microvm/firecracker/pull/2078).
 #include <sys/types.h>
 #include <fcntl.h>
 #include <sys/mman.h>
