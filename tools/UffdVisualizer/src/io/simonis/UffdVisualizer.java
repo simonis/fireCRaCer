@@ -648,9 +648,35 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
     public void mouseReleased(MouseEvent e) {
     }
 
+    private void drawPage(Graphics2D g2d, int uffdIndex, VirtualMapping vm, int pid) {
+        final int pageSize = UffdVisualizer.pageSize, width = UffdVisualizer.width, scale = UffdVisualizer.scale;
+        long address = uffdState.uffdPhysical[uffdIndex];
+        int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
+        int y = (int)(address / (pageSize * width)) * scale;
+        ArrayList<PidVirtual> pids = physicalMapping.getPidVirtual(address);
+        boolean selected = false;
+        if (pids != null) {
+            for (PidVirtual pv : pids) {
+                if (pv.pid() == pid) {
+                    if (vm == null || vm.contains(pv.virtual())) {
+                        selected = true;
+                    }
+                    break;
+                }
+            }
+            if (selected) {
+                g2d.setColor(Colors.LOADED_SELECTED);
+            } else {
+                g2d.setColor(Colors.LOADED);
+            }
+        } else {
+            g2d.setColor(Colors.NEW);
+        }
+        g2d.drawRect(x, y, scale - 1, scale - 1);
+    }
+
     @Override
     public void actionPerformed(ActionEvent e) {
-        final int pageSize = UffdVisualizer.pageSize, width = UffdVisualizer.width, scale = UffdVisualizer.scale;
         if (e.getSource().equals(playButton)) {
             if ("play".equals(playButton.getActionCommand())) {
                 playButton.setActionCommand("pause");
@@ -667,29 +693,7 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
                                 switch (replayState) {
                                     case ReplayThreadState.PLAY : {
                                         if (uffdIndex++ < uffdState.uffdEntries) {
-                                            long address = uffdState.uffdPhysical[uffdIndex];
-                                            int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
-                                            int y = (int)(address / (pageSize * width)) * scale;
-                                            ArrayList<PidVirtual> pids = physicalMapping.getPidVirtual(address);
-                                            boolean selected = false;
-                                            if (pids != null) {
-                                                for (PidVirtual pv : pids) {
-                                                    if (pv.pid() == pid) {
-                                                        if (vm == null || vm.contains(pv.virtual())) {
-                                                            selected = true;
-                                                        }
-                                                        break;
-                                                    }
-                                                }
-                                                if (selected) {
-                                                    g2d.setColor(Colors.LOADED_SELECTED);
-                                                } else {
-                                                    g2d.setColor(Colors.LOADED);
-                                                }
-                                            } else {
-                                                g2d.setColor(Colors.NEW);
-                                            }
-                                            g2d.drawRect(x, y, scale - 1, scale - 1);
+                                            drawPage(g2d, uffdIndex, vm, pid);
                                             uffdField.setValue(uffdIndex);
                                             physicalMemory.setImage(uffdImage);
                                             try {
@@ -737,7 +741,15 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
             physicalMemory.setImage(createPidImage(baseImage, physicalMapping, v2pMappings,
                                     getSelectedPid(null), getSelectedVirtualMapping(null)));
         } else if (e.getSource().equals(forwardButton)) {
-
+            VirtualMapping vm = getSelectedVirtualMapping(null);
+            int pid = getSelectedPid(null);
+            uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, vm);
+            Graphics2D g2d = uffdImage.createGraphics();
+            for (int u = 0; u < uffdState.uffdEntries; u++) {
+                drawPage(g2d, u, vm, pid);
+                uffdField.setValue(uffdState.uffdEntries);
+                physicalMemory.setImage(uffdImage);
+            }
         }
     }
 }
