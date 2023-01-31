@@ -23,6 +23,14 @@ RUN git clone --branch volkers-experiments --single-branch https://github.com/si
 WORKDIR spring-petclinic
 RUN mvn -T0.8C clean package
 
+FROM base as cds
+COPY --from=deps /deps/jdk /opt/jdk
+# Create CDS archive (this was dropped by jlink)
+RUN /opt/jdk/bin/java -Xshare:dump
+COPY --from=deps /deps/spring-petclinic/target/spring-petclinic-*.jar /opt/jars/
+# Now create AppCDS archive
+RUN nohup bash -c "/opt/jdk/bin/java -showversion -XX:ArchiveClassesAtExit=/opt/jdk/lib/server/app-cds.jsa -jar /opt/jars/spring-petclinic-*.jar &" && sleep 10 && pkill -f spring && sleep 5
+
 FROM base
 RUN apt-get install -y iproute2 openssh-server socat vim-tiny --no-install-recommends
 
@@ -38,6 +46,8 @@ RUN chown -R crac:crac /home/crac/.ssh
 RUN mkdir -p /run/sshd
 
 COPY --from=deps --chown=crac:crac /deps/jdk /opt/jdk
+COPY --from=cds --chown=crac:crac /opt/jdk/lib/server/classes.jsa /opt/jdk/lib/server/
+COPY --from=cds --chown=crac:crac /opt/jdk/lib/server/app-cds.jsa /opt/jars/
 #COPY --from=deps /deps/criu-dist/sbin/criu/criu /opt/jdk/lib/criu/
 #RUN sudo chown root:root /opt/jdk/lib/criu
 #RUN chmod u+s /opt/jdk/lib/criu
