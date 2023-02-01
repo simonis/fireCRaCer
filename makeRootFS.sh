@@ -128,7 +128,8 @@ fi
 if [[ ! -f "$MYPATH/deps/UffdVisualizer" ]]; then
   echo "Building deps/UffdVisualizer.jar"
   mkdir -p $MYPATH/deps/UffdVisualizer
-  $MYPATH/deps/jdk/bin/javac -d $MYPATH/deps/UffdVisualizer $MYPATH/tools/UffdVisualizer/src/io/simonis/UffdVisualizer.java
+  $MYPATH/deps/jdk/bin/javac --enable-preview --release 17 -d $MYPATH/deps/UffdVisualizer \
+                             $MYPATH/tools/UffdVisualizer/src/io/simonis/UffdVisualizer.java
   unzip $MYPATH/tools/UffdVisualizer/deps/jlfgr-1_0.jar toolbarButtonGraphics/media/* -d $MYPATH/deps/UffdVisualizer
   $MYPATH/deps/jdk/bin/jar -vcfe $MYPATH/deps/UffdVisualizer.jar io.simonis.UffdVisualizer -C $MYPATH/deps/UffdVisualizer .
   rm -rf $MYPATH/deps/UffdVisualizer

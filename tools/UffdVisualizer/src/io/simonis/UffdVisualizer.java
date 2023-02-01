@@ -221,7 +221,12 @@ class MemMapTreeModel implements TreeModel {
     private HashMap<Integer, Vector<VirtualMapping>> nmtMappings;
     private Vector<Process> processes = new Vector<>();
 
-    static class Process {
+    static class Memory {
+        protected long virt;
+        protected long rss;
+        protected long reloaded;
+    }
+    static class Process extends Memory {
         private String process;
         private int pid;
         private Object[] mappings;
@@ -248,7 +253,7 @@ class MemMapTreeModel implements TreeModel {
         }
     }
 
-    static class Pmap {
+    static class Pmap extends Memory {
         private Process process;
         public Pmap(Process process) {
             this.process = process;
@@ -262,7 +267,7 @@ class MemMapTreeModel implements TreeModel {
         }
     }
 
-    static class NMT {
+    static class NMT extends Memory {
         private Process process;
         public NMT(Process process) {
             this.process = process;
@@ -372,6 +377,60 @@ class MemMapTreeModel implements TreeModel {
     public void valueForPathChanged(TreePath path, Object newValue) {
         // empty for read-only model
     }
+
+    private String toHTML(String head, long virt, long rss, long reloaded) {
+        StringBuffer sb = new StringBuffer("<html><pre>" + head);
+        sb.append("<hr/>");
+        sb.append(String.format("virtual: %7dkb<br/>", virt / 1024));
+        sb.append(String.format("    rss: %7dkb<br/>", rss / 1024));
+        sb.append(String.format("   uffd: %7dkb</pre></html>", reloaded / 1024));
+        return sb.toString();
+    }
+    public String getToolTipText(Object node, String... info) {
+        return switch (node) {
+            case VirtualMapping vm -> {
+                String head = vm.info();
+                if (vm instanceof ReservedMapping) {
+                    head = String.format("%#018x-%#018x", vm.start(), vm.end());
+                }
+                yield toHTML(head, vm.size(), vm.rss(), vm.reloaded());
+            }
+            case Process pr -> {
+                // Return the Pmap values for a process
+                yield getToolTipText(getChild(pr, 0), pr.toString() + "/");
+            }
+            case Memory mem -> {
+                if (mem.virt == 0) {
+                    int mappings = getChildCount(mem);
+                    for (int m = 0; m < mappings; m++) {
+                        VirtualMapping vm = (VirtualMapping)getChild(mem, m);
+                        mem.virt += vm.size();
+                        mem.rss += vm.rss();
+                        mem.reloaded += vm.reloaded();
+                    }
+                }
+                yield toHTML((info.length == 0 ? "" : info[0]) + mem.toString(),
+                             mem.virt, mem.rss, mem.reloaded);
+            }
+            default -> null;
+        };
+    }
+    public boolean contains(Object node, long virtAddr) {
+        return switch (node) {
+            case VirtualMapping vm -> vm.contains(virtAddr);
+            case NMT nmt -> {
+                int mappings = getChildCount(nmt);
+                for (int m = 0; m < mappings; m++) {
+                    VirtualMapping vm = (VirtualMapping)getChild(nmt, m);
+                    if (vm.contains(virtAddr)) {
+                        yield true;
+                    }
+                }
+                yield false;
+            }
+            default -> false;
+        };
+    }
 }
 
 final class ReplayThreadState {
@@ -479,14 +538,17 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
     }
 
     private BufferedImage createPidImage(BufferedImage baseImage, PhysicalMapping physicalMapping,
-                                         HashMap<Integer, TreeMap<Long, Long>> v2pMappings, int pid, VirtualMapping vm) {
+                                         HashMap<Integer, TreeMap<Long, Long>> v2pMappings) {
         final int pageSize = UffdVisualizer.pageSize, width = UffdVisualizer.width, scale = UffdVisualizer.scale;
+        Object vm = getSelectedVirtualMapping();
+        int pid = getSelectedPid();
+        MemMapTreeModel tm = (MemMapTreeModel)processTree.getModel();
         BufferedImage pidImage = createEmptyImage();
         Graphics2D g2d = pidImage.createGraphics();
         g2d.drawImage(baseImage, 0, 0, null);
         for (var entry : v2pMappings.get(pid).entrySet()) {
             long virtAddr = entry.getKey();
-            if (vm == null || vm.contains(virtAddr)) {
+            if (vm == null || tm.contains(vm, virtAddr)) {
                 long physAddr = entry.getValue();
                 int x = (((int)(physAddr % (pageSize * width))) / pageSize) * scale;
                 int y = (int)(physAddr / (pageSize * width)) * scale;
@@ -530,21 +592,8 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
             public Component getTreeCellRendererComponent(JTree tree, Object value, boolean sel, boolean expanded,
                                                           boolean leaf, int row, boolean hasFocus) {
                 final Component rc = super.getTreeCellRendererComponent(tree, value, sel, expanded, leaf, row, hasFocus);
-                if (value instanceof VirtualMapping) {
-                    VirtualMapping vm = (VirtualMapping)value;
-                    String head = vm.info();
-                    if (vm instanceof ReservedMapping) {
-                        head = String.format("%#018x-%#018x", vm.start(), vm.end());
-                    }
-                    StringBuffer sb = new StringBuffer("<html><pre>" + head);
-                    sb.append("<hr/>");
-                    sb.append(String.format("virtual: %7dkb<br/>", vm.size() / 1024));
-                    sb.append(String.format("    rss: %7dkb<br/>", vm.rss() / 1024));
-                    sb.append(String.format("   uffd: %7dkb</pre></html>", vm.reloaded() / 1024));
-                    this.setToolTipText(sb.toString());
-                } else {
-                    this.setToolTipText(null);
-                }
+                String toolTipText = ((MemMapTreeModel)tree.getModel()).getToolTipText(value);
+                this.setToolTipText(toolTipText);
                 return rc;
             }
         });
@@ -597,29 +646,23 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
         processTree.setSelectionRow(1);
     }
 
-    private VirtualMapping getSelectedVirtualMapping(TreePath tp) {
-        if (tp == null) {
-            tp = processTree.getSelectionPath();
-        }
-        VirtualMapping vm = null;
-        if (tp.getLastPathComponent() instanceof VirtualMapping) {
-            vm = (VirtualMapping)tp.getLastPathComponent();
-        }
-        return vm;
+    private Object getSelectedVirtualMapping() {
+        TreePath tp = processTree.getSelectionPath();
+        return switch (tp.getLastPathComponent()) {
+            case VirtualMapping vm -> vm;
+            case MemMapTreeModel.NMT nmt -> nmt;
+            default -> null;
+        };
     }
 
-    private int getSelectedPid(TreePath tp) {
-        if (tp == null) {
-            tp = processTree.getSelectionPath();
-        }
+    private int getSelectedPid() {
+        TreePath tp = processTree.getSelectionPath();
         return ((MemMapTreeModel.Process)tp.getPathComponent(1)).pid();
     }
 
     @Override
     public void valueChanged(TreeSelectionEvent e) {
-        TreePath tp = e.getPath();
-        pidImage = createPidImage(baseImage, physicalMapping, v2pMappings,
-                                  getSelectedPid(tp), getSelectedVirtualMapping(tp));
+        pidImage = createPidImage(baseImage, physicalMapping, v2pMappings);
         physicalMemory.setImage(pidImage);
         playButton.setActionCommand("play");
         playButton.setIcon(playIcon);
@@ -648,8 +691,11 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
     public void mouseReleased(MouseEvent e) {
     }
 
-    private void drawPage(Graphics2D g2d, int uffdIndex, VirtualMapping vm, int pid) {
+    private void drawPage(Graphics2D g2d, int uffdIndex) {
         final int pageSize = UffdVisualizer.pageSize, width = UffdVisualizer.width, scale = UffdVisualizer.scale;
+        Object vm = getSelectedVirtualMapping();
+        int pid = getSelectedPid();
+        MemMapTreeModel tm = (MemMapTreeModel)processTree.getModel();
         long address = uffdState.uffdPhysical[uffdIndex];
         int x = (((int)(address % (pageSize * width))) / pageSize) * scale;
         int y = (int)(address / (pageSize * width)) * scale;
@@ -658,7 +704,7 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
         if (pids != null) {
             for (PidVirtual pv : pids) {
                 if (pv.pid() == pid) {
-                    if (vm == null || vm.contains(pv.virtual())) {
+                    if (vm == null || tm.contains(vm, pv.virtual())) {
                         selected = true;
                     }
                     break;
@@ -682,9 +728,7 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
                 playButton.setActionCommand("pause");
                 playButton.setIcon(pauseIcon);
                 if (replayThread == null) {
-                    VirtualMapping vm = getSelectedVirtualMapping(null);
-                    int pid = getSelectedPid(null);
-                    uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, vm);
+                    uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings);
                     Graphics2D g2d = uffdImage.createGraphics();
                     uffdIndex = 0;
                     replayThread = new Thread() {
@@ -693,7 +737,7 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
                                 switch (replayState) {
                                     case ReplayThreadState.PLAY : {
                                         if (uffdIndex++ < uffdState.uffdEntries) {
-                                            drawPage(g2d, uffdIndex, vm, pid);
+                                            drawPage(g2d, uffdIndex);
                                             uffdField.setValue(uffdIndex);
                                             physicalMemory.setImage(uffdImage);
                                             try {
@@ -738,15 +782,12 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
             replayThread = null;
             uffdIndex = 0;
             uffdField.setValue(uffdIndex);
-            physicalMemory.setImage(createPidImage(baseImage, physicalMapping, v2pMappings,
-                                    getSelectedPid(null), getSelectedVirtualMapping(null)));
+            physicalMemory.setImage(createPidImage(baseImage, physicalMapping, v2pMappings));
         } else if (e.getSource().equals(forwardButton)) {
-            VirtualMapping vm = getSelectedVirtualMapping(null);
-            int pid = getSelectedPid(null);
-            uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings, pid, vm);
+            uffdImage = createPidImage(baseImage, physicalMapping, v2pMappings);
             Graphics2D g2d = uffdImage.createGraphics();
             for (int u = 0; u < uffdState.uffdEntries; u++) {
-                drawPage(g2d, u, vm, pid);
+                drawPage(g2d, u);
                 uffdField.setValue(uffdState.uffdEntries);
                 physicalMemory.setImage(uffdImage);
             }
