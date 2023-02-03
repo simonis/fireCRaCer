@@ -27,6 +27,17 @@ MYPATH=$(dirname $(realpath -s $0))
 # Delete network namespace:
 # sudo ip netns delete fc0
 #
+# In order to make MMDS (https://github.com/firecracker-microvm/firecracker/blob/main/docs/mmds/mmds-user-guide.md)
+# work in the guest, we have to do the following in the guest:
+#  ip route add ${MMDS_IPV4_ADDR} dev ${MMDS_NET_IF}
+# where ${MMDS_IPV4_ADDR} corresponds to `mmds-config:ipv4_address" (see below) and
+# ${MMDS_NET_IF} corresponds to `mmds-config:network_interfaces` (see below).
+#
+# When using "socat" instead of "curl" from within the guest to access MMD we have to use the `crnl` option:
+#   socat - TCP:${MMDS_IPV4_ADDR}:80,crnl
+#     GET / HTTP/1.1
+# or simply do, if "curl" is available:
+#   curl -v -H "Accept: application/json" http://${MMDS_IPV4_ADDR}/
 
 FIRECRACKER=${FIRECRACKER:-"firecracker"}
 
@@ -85,7 +96,7 @@ while getopts 'lmdt:s:r:n:i:ukh?' opt; do
       echo "     with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
       echo " -m: enable Firecracker metrics to METRICS_PATH"
       echo " -t <tap>: connect Firecracker to tap device 'tap<tap>' with <tap> from 0..255 (default 'tap0')."
-      echo"            If the tap device doesn't exist, it will be created."
+      echo "            If the tap device doesn't exist, it will be created."
       echo " -d: Disable serial devices (i.e 8250.nr_uarts=0)."
       echo "     This saves ~100ms boot time but will disable the boot console."
       echo " -i <rw-image>: a file or device which will be used as read/write overlay for the root file system."
