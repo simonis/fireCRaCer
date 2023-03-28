@@ -2,7 +2,7 @@ FROM ubuntu:22.04 as base
 RUN apt-get update
 
 FROM base as tools
-RUN apt-get update
+RUN apt-get -y update
 RUN apt-get install -y gcc
 WORKDIR /tools
 COPY /tools/fc_log_timestamp.c /tools/virt2phys.c ./
@@ -59,6 +59,7 @@ COPY --chown=crac:crac /tools/get_maps.sh /opt/tools/
 COPY --chown=crac:crac /tools/mem_mapping.sh /opt/tools/
 COPY --from=tools --chown=crac:crac /tools/virt2phys /opt/tools/
 COPY --from=tools --chown=crac:crac /tools/fc_log_timestamp /opt/tools/
+COPY --from=tools --chown=crac:crac /tools/procps-v4.0.0/kill /opt/tools/
 
 # The following two directories are required in order to mount this root file system
 # read-only and overlay it with a writeable overlay file system (see ro_init.sh)
