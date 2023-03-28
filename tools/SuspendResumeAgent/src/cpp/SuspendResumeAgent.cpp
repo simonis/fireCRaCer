@@ -37,20 +37,21 @@ static int setupJVMTI(JNIEnv *env, JavaVM *jvm) {
   error = jvmti->AddCapabilities(&capabilities);
   if (error != JVMTI_ERROR_NONE) {
     printf("Can't add 'can_suspend' capability: %d\n", error);
+    return JNI_ERR;
   }
-
+  return JNI_OK;
 }
 
 extern "C"
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
   fprintf(stdout, "Agent_OnLoad\n");
-  setupJVMTI(NULL, vm);
+  return setupJVMTI(NULL, vm);
 }
 
 extern "C"
 JNIEXPORT jint JNICALL Agent_OnAttach(JavaVM* vm, char *options, void *reserved) {
   fprintf(stdout, "Agent_OnAttach\n");
-  setupJVMTI(NULL, vm);
+  return setupJVMTI(NULL, vm);
 }
 
 extern "C"
