@@ -648,6 +648,9 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
 
     private Object getSelectedVirtualMapping() {
         TreePath tp = processTree.getSelectionPath();
+        if (tp == null) {
+          return null;
+        }
         return switch (tp.getLastPathComponent()) {
             case VirtualMapping vm -> vm;
             case MemMapTreeModel.NMT nmt -> nmt;
@@ -657,6 +660,9 @@ class PhysicalViewPanel extends JPanel implements TreeSelectionListener, ActionL
 
     private int getSelectedPid() {
         TreePath tp = processTree.getSelectionPath();
+        if (tp == null) {
+          return 0; // Always safe because kernel uses pid 0
+        }
         return ((MemMapTreeModel.Process)tp.getPathComponent(1)).pid();
     }
 
