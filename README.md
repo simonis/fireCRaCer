@@ -168,3 +168,43 @@ Pressing the play button will start to animate the pages loaded by the `userfaul
 ![](docs/images/UffdVisualizerAnimated.gif)
 
 Yellow squares denote pages which belong to the selected process whereas blue squares are pages belonging to other processes, the kernel or the page cache within the guest VM (restarting from a snapshot restarts the whole guest VM, not just a single process in the guest VM).
+
+##### Visualizing the effects of different JVM settings
+
+Lets first look at some of the JVM memory categories as exposed by NMT.
+
+![](docs/images/UffdVisualizer_heap.png)
+
+Although the Java heap consists of a single, contiguous virtual address range (from `0x0f0a00000` to `0x0100000000`) we can see that the physical pages currently allocated by the kernel (notice that only `62696kb` out of the reserved `251904kb` have been committed) are quite scattered over the whole physical address range.
+
+The same holds true for the Metaspace:
+
+![](docs/images/UffdVisualizer_metaspace.png)
+
+There's actually a single contiguous virtual address range that was reserved for the whole Metaspace, but NMT reports the Metaspace in several chunks in the order in which these parts where consecutively committed. Again we can see how a contiguous virtual address range is scattered over the physical address range. In the case of the Metaspace the physical "*fragmentation*" is even higher compared to the Java heap because committing of memory in the Metspace happens in smaller chunks.
+
+Finally lets have a look at the code cache which provides a similar picture:
+
+![](docs/images/UffdVisualizer_code.png)
+
+For all the last three pictures you can see that the amount of memory reported as `uffd` (which is the amount of memory loaded at restore time until the first request could be served) is considerable smaller compared to the corresponding `rss` value. E.g. out of `62696kb` heap memory, only `3852kb` have been touched, out of `8192kb` Metaspace, `468kb` have been reloaded and out of `18752kb` JIT-compiled code only `4816kb` where really executed in order to process the first request after resume.
+
+Now lets look at the same memory segments, but for a JVM which was launched with Transparent Huge Pages (`-XX:+UseTransparentHugePages`) and Application Class Data Sharing turned on (`-Xshare:on -XX:SharedArchiveFile=..`):
+
+![](docs/images/UffdVisualizer_heap_THP_AppCDS.png)
+
+As you can see, the physical pages which back up the Java heap are still not completely contiguous, but much more regularly layed out in the physical address space because they are now build from 2mb huge pages compared to the 4kb regular pages before.
+
+For the Metaspace we know have one huge virtual mapping for the shared class archive:
+
+![](docs/images/UffdVisualizer_archive_THP_AppCDS.png)
+
+Notice that the Metaspace is not backed by huge pages even if we run with `-XX:+UseTransparentHugePages`. The interesting part of this picture are the blue squares which denote memory pages which are shared by more than one process. In this specific case we only ran a single JVM, but because the class data is now directly mapped from the AppCDS archive file, these pages also land in the kernel's page cache:
+
+![](docs/images/UffdVisualizer_archive_pagecache_THP_AppCDS.png)
+
+If a second JVM would be started with the same AppCDS archive, it would map the same physical pages (painted in blue) into its own virtual address space. Both processes will still use the same amount of physical memory (RSS) but they will now occupy a smaller [proportional set size](https://en.wikipedia.org/wiki/Proportional_set_size) (PSS). I.e. together, the two processes would use less physical memory than two times the RSS size of one process, because they share some mount of physical pages.
+
+Finally, when looking at the code cache, we can clearly see that it is backed by huge pages as well which leads to a much less fragmented physical memory layout (comparable to that of the Java heap):
+
+![](docs/images/UffdVisualizer_code_THP_AppCDS.png)
