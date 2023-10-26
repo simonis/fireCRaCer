@@ -104,6 +104,7 @@ while getopts 'lmdt:s:r:n:i:ukh?' opt; do
       echo ""
       echo " -s: snapshot Firecracker on tap device 'tap<tap>' (default 'tap0') to <snapshot-dir>."
       echo "     If <snapshot-dir> doesn't exist, it will be created."
+      echo "     SNAPSHOT_TYPE (defaults to 'Diff') determines the snapshot type (i.e. 'Full' or 'Diff')."
       echo ""
       echo " -r: restore Firecracker snapshotted on tap device'tap<tap>' (default 'tap0') from <snapshot-dir>."
       echo " -u: run with a userfaultfd memory backend and redirect its output to <log-file>"
@@ -245,6 +246,7 @@ if [[ -v SNAPSHOT ]]; then
   if [ ! -d "$SNAPSHOT" ]; then
     mkdir -p $SNAPSHOT
   fi
+  SNAPSHOT_TYPE=${SNAPSHOT_TYPE:-"Diff"}
   # Suspend
   ret=$(curl --write-out '%{http_code}' \
              --silent \
@@ -263,7 +265,7 @@ if [[ -v SNAPSHOT ]]; then
              -X PUT 'http://localhost/snapshot/create' \
              -H 'Accept: application/json' \
              -H 'Content-Type: application/json' \
-             -d "{ \"snapshot_type\": \"Diff\", \
+             -d "{ \"snapshot_type\": \"$SNAPSHOT_TYPE\", \
                    \"snapshot_path\": \"$SNAPSHOT/snapshot_file\", \
                    \"mem_file_path\": \"$SNAPSHOT/mem_file\" }")
   # Don't use an explicit snapshot version to run with every release of Firecracker
@@ -323,6 +325,11 @@ if [[ -v RESTORE ]]; then
       echo "Error: can't access userfaultfd daemon at $UFFD_HANDLER"
       exit 1
     fi
+    if [[ -e /dev/userfaultfd && ! -r /dev/userfaultfd ]]; then
+      echo "/dev/userfaultfd not readable! This is required to run firecracker with userfaultfd."
+      echo "Running:"
+      echo_and_exec sudo setfacl -m u:${USER}:rw /dev/userfaultfd
+    fi
     UFFD_SOCKET=${UFFD_SOCKET:-"/tmp/fireCRaCer-uffd-${TAP_DEVICE}${NAMESPACE_SUFFIX}.socket"}
     rm -f $UFFD_SOCKET
     echo "Running: $UFFD_HANDLER $UFFD_OPTS $UFFD_SOCKET $RESTORE/mem_file > $USERFAULTFD 2>&1"
@@ -337,31 +344,39 @@ if [[ -v RESTORE ]]; then
   fi
   rm -f $FC_SOCKET
   rm -f $FC_VSOCK
+
+  {
+    # We do the API call to the Firecracker VMM from a background
+    # process such that we can keep the firecracker process connected
+    # to the stdin/stdout of the shell (this was fixed in Firecracker
+    # by https://github.com/firecracker-microvm/firecracker/pull/2879).
+    #
+    # If we don't do this and instead run the firecracker process in the
+    # background we would have to redirect stdin because firecracker wants
+    # to set stdin to raw mode and this will not work if job control is
+    # enabled (i.e. firecracker will receive a SIGTTIN/SIGTTOU signal and block).
+    #
+    sleep 1
+    ret=$(curl --write-out '%{http_code}' \
+               --silent \
+               --output /dev/null \
+               --unix-socket $FC_SOCKET \
+               -X PUT 'http://localhost/snapshot/load' \
+               -H  'Accept: application/json' \
+               -H  'Content-Type: application/json' \
+               -d "{ \"snapshot_path\": \"$RESTORE/snapshot_file\", \
+                     \"mem_backend\": { \
+                       \"backend_path\": \"$BACKEND_PATH\", \
+                       \"backend_type\": \"$BACKEND_TYPE\" \
+                     }, \
+                     \"enable_diff_snapshots\": true, \
+                     \"resume_vm\": true }")
+    check_http_response $ret  "204" "Restore"
+  }&
+
   echo "Running: $NAMESPACE_CMD $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER"
-  # Enable job control
-  set -m
-  # Have to redirect stdin because firecracker wants to set stdin to raw mode
-  # and this will not work if job control is anbled (i.e. firecracker
-  # will receive a SIGTTIN/SIGTTOU signal and block).
-  $NAMESPACE_CMD $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER < /dev/null &
-  sleep 1
-  ret=$(curl --write-out '%{http_code}' \
-             --silent \
-             --output /dev/null \
-             --unix-socket $FC_SOCKET \
-             -X PUT 'http://localhost/snapshot/load' \
-             -H  'Accept: application/json' \
-             -H  'Content-Type: application/json' \
-             -d "{ \"snapshot_path\": \"$RESTORE/snapshot_file\", \
-                   \"mem_backend\": { \
-                     \"backend_path\": \"$BACKEND_PATH\", \
-                     \"backend_type\": \"$BACKEND_TYPE\" \
-                   }, \
-                   \"enable_diff_snapshots\": true, \
-                   \"resume_vm\": true }")
-  check_http_response $ret  "204" "Restore"
-  # Bring the firecracker process into the forground
-  fg %$FIRE > /dev/null
+  $NAMESPACE_CMD $FIRECRACKER --boot-timer --api-sock $FC_SOCKET $LOGGER
+
   exit 0
 fi
 
