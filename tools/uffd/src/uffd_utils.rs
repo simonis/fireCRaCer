@@ -8,8 +8,6 @@ use std::{mem, ptr};
 use std::cmp::Ordering;
 use std::cmp::Ordering::{Less, Equal, Greater};
 
-use libc::c_void;
-use nix::sys::mman::{mmap, MapFlags, ProtFlags};
 use nix::unistd::Pid;
 use serde::Deserialize;
 use userfaultfd::Uffd;
@@ -149,16 +147,16 @@ impl UffdPfHandler {
     // the 'UFFD_FEATURE_THREAD_ID' feature (i.e. 'uffd_builder.require_features(FeatureFlags::THREAD_ID)').
     // Second, the thread IDs are not meaningfull if the process which generates the page faults is a KVM
     // container like firecracker, because the guest threads are not visible on the host.
-    pub fn serve_pf(&mut self, addr: *mut u8, write: bool, _thread_id: Pid) {
+    pub fn serve_pf(&mut self, addr: *mut u8, write: bool, thread_id: Pid) {
         // Find the start of the page that the current faulting address belongs to.
-        let dst = (addr as usize & !(*PAGE_SIZE as usize - 1)) as *mut c_void;
+        let dst = (addr as usize & !(*PAGE_SIZE as usize - 1)) as *mut libc::c_void;
         let fault_page_addr = dst as u64;
         let access = if write {
             "w"
         } else {
             "r"
         }.to_string();
-        print!("UFFD_EVENT_PAGEFAULT ({}): {:#018x} {:#018x} ", access, addr as u64, fault_page_addr);
+        print!("UFFD_EVENT_PAGEFAULT ({}): {} {:#018x} {:#018x} ", access, thread_id, addr as u64, fault_page_addr);
 
         for region in self.mem_regions.iter() {
             if fault_page_addr >= region.mapping.base_host_virt_addr &&
@@ -239,17 +237,20 @@ pub fn create_pf_handler(args: Vec<String>, verbose: bool) -> UffdPfHandler {
     let size = file.metadata().unwrap().len() as usize;
 
     // mmap a memory area used to bring in the faulting regions.
-    let memfile_buffer = unsafe {
-        mmap(
+    let ret = unsafe {
+        libc::mmap(
             ptr::null_mut(),
             size,
-            ProtFlags::PROT_READ,
-            MapFlags::MAP_PRIVATE,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
             file.as_raw_fd(),
             0,
         )
-        .expect("mmap failed")
-    } as *const u8;
+    };
+    if ret == libc::MAP_FAILED {
+        panic!("mmap failed");
+    }
+    let memfile_buffer = ret as *const u8;
 
     // Get Uffd from UDS. We'll use the uffd to handle PFs for Firecracker.
     let listener = UnixListener::bind(&uffd_sock_path).expect("Cannot bind to socket path");

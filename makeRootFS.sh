@@ -108,6 +108,8 @@ docker cp --archive $docker_id:/ - | sudo tar -xf - --same-owner -C $MOUNT_DIR
 docker kill $docker_id
 
 # Build uffd_handler
+# We need to pull the right base OS (-bullseye for Ubuntu 20.04, -buster for 18.04 and -bookworm for 22.04)
+# See https://askubuntu.com/questions/445487/what-debian-version-are-the-different-ubuntu-versions-based-on
 if [[ ! -f "$MYPATH/deps/uffd_handler" ]]; then
   echo "Building deps/uffd_handler.jar"
   docker run --rm \
@@ -115,7 +117,7 @@ if [[ ! -f "$MYPATH/deps/uffd_handler" ]]; then
          -v "$MYPATH/tools/uffd":/usr/src/myapp \
          -w /usr/src/myapp \
          -e RUSTFLAGS='--cfg feature="linux4_14" --cfg linux4_14' \
-         rust:1.52.1 \
+         rust:1.73.0-bullseye \
          /bin/bash -c "
            apt-get update;
            apt-get install -y libclang-dev --no-install-recommends;
