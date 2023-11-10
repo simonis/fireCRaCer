@@ -7,6 +7,7 @@ DOCKER_FILE="$MYPATH/Dockerfile.ubuntu22"
 ROOTFS_FILE="$MYPATH/deps/rootfs.ext4"
 ROOTFS_SIZE="384"
 CRAC_JDK="https://github.com/CRaC/openjdk-builds/releases/download/17-crac%2B3/openjdk-17-crac+3_linux-x64.tar.gz"
+JATTACH_URL="https://github.com/jattach/jattach/releases/download/v2.1/jattach"
 
 while getopts 'd:i:j:s:oh' opt; do
   case "$opt" in
@@ -19,6 +20,9 @@ while getopts 'd:i:j:s:oh' opt; do
     j)
       CRAC_JDK="$OPTARG"
       ;;
+    a)
+      JATTACH_URL="$OPTARG"
+      ;;
     s)
       ROOTFS_SIZE="$OPTARG"
       ;;
@@ -30,6 +34,9 @@ while getopts 'd:i:j:s:oh' opt; do
       echo "  -d <docker-file>: the Docker file to use (defaults to $DOCKER_FILE)"
       echo "  -i <root-fs-image>: file in which the root fs image will be created (defaults to $ROOTFS_FILE)."
       echo "  -i <root-fs-size>: size of the root file system (defaults to $ROOTFS_SIZE)."
+      echo "  -a <jattach>: either a directory or an URL for 'jattach' (defaults to $JATTACH_URL)."
+      echo "                'jattach' will be chached in $MYPATH/deps/jattach."
+      echo "                A new 'jattach' will only be installed in the image if there's no cached version."
       echo "  -j <jdk>: either a directory or an URL for the JDK (defaults to $CRAC_JDK)."
       echo "            The <jdk> will be chached in $MYPATH/deps/jdk."
       echo "            A new <jdk> will only be installed in the image if there's no cached version."
@@ -45,7 +52,7 @@ shift "$(($OPTIND -1))"
 # (see https://stackoverflow.com/questions/19895185/bash-shell-read-error-0-resource-temporarily-unavailable)
 # > bash
 # > exit
-# The following also seems to help as well and can be done from within this script.From the sam SO question:
+# The following also seems to help as well and can be done from within this script.From the same SO question:
 # Clearly (resource temporarily unavailable) this is caused by programs that exits but leaves STDIN in nonblocking mode.
 perl -MFcntl -e 'fcntl STDIN, F_SETFL, fcntl(STDIN, F_GETFL, 0) & ~O_NONBLOCK'
 
@@ -76,6 +83,20 @@ if [[ ! -d "$MYPATH/deps/jdk" ]]; then
   fi
 else
   echo "Using cached JDK from $MYPATH/deps/jdk"
+fi
+
+# Get jattach
+if [[ ! -f "$MYPATH/deps/jattach" ]]; then
+  if [[ "$JATTACH_URL" =~ ^http[s]://.+ ]]; then
+    echo "Downloading 'jattach' from $JATTACH_URL"
+    wget -O $MYPATH/deps/jattach "$JATTACH_URL"
+    chmod a+x $MYPATH/deps/jattach
+  else
+    echo "Copying 'jattach' from $JATTACH_URL"
+    cp -rf "$JATTACH_URL" $MYPATH/deps/jattach
+  fi
+else
+  echo "Using cached 'jattach' from $MYPATH/deps/jattach"
 fi
 
 # Build SuspendResumeAgent
