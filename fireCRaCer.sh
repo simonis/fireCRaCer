@@ -44,16 +44,27 @@ FIRECRACKER=${FIRECRACKER:-"firecracker"}
 KERNEL=${KERNEL:-"$MYPATH/deps/vmlinux"}
 IMAGE=${IMAGE:-"$MYPATH/deps/rootfs.ext4"}
 UFFD_HANDLER=${UFFD_HANDLER:-"$MYPATH/deps/uffd_handler"}
+BALLOON_SIZE=${BALLOON_SIZE:-"100"}
+BALLOON_POLLING_INTERVAL=${BALLOON_POLLING_INTERVAL:-"1"}
 
 TAP_DEVICE=0
 
-while getopts 'lmdt:s:r:n:i:ukh?' opt; do
+while getopts 'lmbdqpt:s:r:n:i:ukh?' opt; do
   case "$opt" in
     l)
       LOGGING=1
       ;;
     m)
       METRICS=1
+      ;;
+    b)
+      BALLOONING=1
+      ;;
+    q)
+      BALLOON_QUERY=1
+      ;;
+    p)
+      BALLOON_PATCH=1
       ;;
     s)
       SNAPSHOT="$OPTARG"
@@ -87,14 +98,18 @@ while getopts 'lmdt:s:r:n:i:ukh?' opt; do
       KILL=1
       ;;
     ?|h)
-      echo "Usage: fireCRaCer.sh [-l] [-m] [-t <tap>] [-d] [-i <rw-image>]"
+      echo "Usage: fireCRaCer.sh [-l] [-m] [-b] [-t <tap>] [-d] [-i <rw-image>]"
       echo "       fireCRaCer.sh -s <snapshot-dir> [-t <tap>]"
       echo "       fireCRaCer.sh -r <snapshot-dir> [-t <tap>] [-n <namespace>] [-l] [-u [<log-file>]]"
+      echo "       fireCRaCer.sh -q [-t <tap>]"
+      echo "       fireCRaCer.sh -p [-t <tap>]"
       echo "       fireCRaCer.sh -k [-t <tap>]"
       echo ""
       echo " -l: enable Firecracker logging to LOG_PATH (default '/tmp/fireCRaCer-tap<tap>[-fc<namespace>].log')"
       echo "     with LOG_LEVEL and LOG_SHOW_LEVEL/LOG_SHOW_ORIGIN"
       echo " -m: enable Firecracker metrics to METRICS_PATH"
+      echo " -b: use ballooning device of size BALLOON_SIZE (defaults to '$BALLOON_SIZE'mb) and"
+      echo "     polling interval BALLOON_POLLING_INTERVAL (defaults to '$BALLOON_POLLING_INTERVAL's)"
       echo " -t <tap>: connect Firecracker to tap device 'tap<tap>' with <tap> from 0..255 (default 'tap0')."
       echo "            If the tap device doesn't exist, it will be created."
       echo " -d: Disable serial devices (i.e 8250.nr_uarts=0)."
@@ -113,6 +128,11 @@ while getopts 'lmdt:s:r:n:i:ukh?' opt; do
       echo "     Options can be passed to userfaultfd by setting UFFD_OPTS."
       echo " -n: restore the snapshot in the network namespace 'fc<namespace>' with <namespace>"
       echo "      from 0..255. If the namespace doesn't exist, it will be created."
+      echo ""
+      echo " -q: query the ballooning statistics for Firecracker on tap device 'tap<tap>' (default 'tap0')"
+      echo ""
+      echo " -p: update balloning device settings for Firecracker on tap device 'tap<tap>' (default 'tap0')"
+      echo "     to BALLOON_SIZE (defaults to '$BALLOON_SIZE'mb) and BALLOON_POLLING_INTERVAL (defaults to '$BALLOON_POLLING_INTERVAL's)."
       echo ""
       echo " -k: send Firecracker on tap device 'tap<tap>' (default 'tap0')"
       echo "     a CtrlAltDel message (i.e. shut it down)."
@@ -242,6 +262,40 @@ if [[ -v KILL ]]; then
   exit 0
 fi
 
+if [[ -v BALLOON_QUERY ]]; then
+  echo "Querying ballooning statistics for firecracker instance on tap device $TAP_DEVICE $NAMESPACE"
+  TMP=$(mktemp)
+  ret=$(curl --write-out '%{http_code}' \
+             --silent \
+             --output $TMP \
+             --unix-socket $FC_SOCKET \
+             -X GET 'http://localhost/balloon/statistics' \
+             -H  'Accept: application/json')
+  check_http_response $ret  "200" "Querying ballooning statistics"
+  command -v python3 >/dev/null 2>&1 && PYTHON_3=yes
+  if [[ -v PYTHON_3 ]]; then
+    cat $TMP | python3 -m json.tool
+  else
+    cat $TMP
+  fi
+  exit 0
+fi
+
+if [[ -v BALLOON_PATCH ]]; then
+  echo "Patching ballooning device settings for firecracker instance on tap device $TAP_DEVICE $NAMESPACE"
+  ret=$(curl --write-out '%{http_code}' \
+             --silent \
+             --output /dev/null \
+             --unix-socket $FC_SOCKET \
+             -X PATCH 'http://localhost/balloon' \
+             -H  'Accept: application/json' \
+             -H  'Content-Type: application/json' \
+             -d "{ \"amount_mib\": $BALLOON_SIZE
+                    }")
+  check_http_response $ret  "204" "Patching balloon settings"
+  exit 0
+fi
+
 if [[ -v SNAPSHOT ]]; then
   if [ ! -d "$SNAPSHOT" ]; then
     mkdir -p $SNAPSHOT
@@ -310,6 +364,17 @@ if [[ -v LOGGING ]]; then
 EOF
     )
   fi
+fi
+
+if [[ -v BALLOONING ]]; then
+  BALLOON=$(cat <<EOF
+  "balloon": {
+      "amount_mib": $BALLOON_SIZE,
+      "deflate_on_oom": true,
+      "stats_polling_interval_s": $BALLOON_POLLING_INTERVAL
+  },
+EOF
+  )
 fi
 
 if [[ -v RESTORE ]]; then
@@ -462,6 +527,7 @@ cat <<EOF > $CONFIG_FILE
   },
   $LOGGER
   $METRICS
+  $BALLOON
   "machine-config": {
     "vcpu_count": $VCPU_COUNT,
     "mem_size_mib": $MEM_SIZE,

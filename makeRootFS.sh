@@ -35,7 +35,7 @@ while getopts 'd:i:j:s:oh' opt; do
       echo "  -i <root-fs-image>: file in which the root fs image will be created (defaults to $ROOTFS_FILE)."
       echo "  -i <root-fs-size>: size of the root file system (defaults to $ROOTFS_SIZE)."
       echo "  -a <jattach>: either a directory or an URL for 'jattach' (defaults to $JATTACH_URL)."
-      echo "                'jattach' will be chached in $MYPATH/deps/jattach."
+      echo "                'jattach' will be cached in $MYPATH/deps/jattach."
       echo "                A new 'jattach' will only be installed in the image if there's no cached version."
       echo "  -j <jdk>: either a directory or an URL for the JDK (defaults to $CRAC_JDK)."
       echo "            The <jdk> will be chached in $MYPATH/deps/jdk."
