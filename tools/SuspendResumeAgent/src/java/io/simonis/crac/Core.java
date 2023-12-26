@@ -25,12 +25,14 @@
 package io.simonis.crac;
 
 import io.simonis.crac.impl.FirecrackerContext;
+import io.simonis.utils.Logger;
 
 /**
  * The coordination service.
  */
 public class Core {
     static private final Context<Resource> firecrackerContext = new FirecrackerContext();
+    static private final Logger log = Logger.getLogger(Core.class);
 
     /**
      * Gets the global {@code Context} for checkpoint/restore notifications.
@@ -55,6 +57,23 @@ public class Core {
      */
     public static void checkpointRestore() throws
             CheckpointException, RestoreException {
-      throw new UnsupportedOperationException();
+        log.info("Starting checkpoint");
+        log.debug("  from:", new Exception("Starting checkpoint"));
+        try {
+            firecrackerContext.beforeCheckpoint(null);
+        } catch (CheckpointException ce) {
+            log.error("Error when calling beforeCheckpoint()");
+            return;
+        }
+        log.info("Checkpointed");
+        log.info("Starting restore");
+        log.debug("  from:", new Exception("Starting restore"));
+        try {
+            firecrackerContext.afterRestore(null);
+        } catch (RestoreException re) {
+            log.error("Error when calling afterRestore()");
+            return;
+        }
+        log.info("Checkpoint restored");
     }
 }
