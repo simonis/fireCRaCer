@@ -105,6 +105,7 @@ if [[ ! -f "$MYPATH/deps/SuspendResumeAgent" ]]; then
   mkdir -p $MYPATH/deps/SuspendResumeAgent
   $MYPATH/deps/jdk/bin/javac -d $MYPATH/deps/SuspendResumeAgent \
                              $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/SuspendResumeAgent.java \
+                             $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/utils/*.java \
                              $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/crac/*.java \
                              $MYPATH/tools/SuspendResumeAgent/src/java/io/simonis/crac/impl/*.java
   g++ -fPIC -shared -I $MYPATH/deps/jdk/include/ -I $MYPATH/deps/jdk/include/linux/ \
