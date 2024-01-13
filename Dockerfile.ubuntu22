@@ -14,26 +14,32 @@ RUN gcc -o virt2phys virt2phys.c
 COPY /tools/kill ./
 
 FROM base as deps
-RUN apt-get update --fix-missing
-RUN apt-get install -y maven binutils git --no-install-recommends
+RUN apt-get update
+RUN apt-get install -y maven binutils git wget --no-install-recommends
 RUN mvn -version
 WORKDIR /deps
-#RUN wget https://github.com/org-crac/criu/releases/tag/release-crac/criu-dist.tar.gz
-#RUN tar -xzf criu-dist.tar.gz
 COPY /deps/jdk jdk-base
 RUN ./jdk-base/bin/jlink --add-modules ALL-MODULE-PATH --output jdk --strip-debug --no-man-pages --no-header-files --compress=2
 #RUN git clone https://github.com/spring-projects/spring-petclinic.git
-RUN git clone --branch volkers-experiments --single-branch https://github.com/simonis/spring-petclinic.git
-WORKDIR spring-petclinic
-RUN mvn -T0.8C clean package
+#RUN git clone --branch volkers-experiments --single-branch https://github.com/simonis/spring-petclinic.git
+RUN git clone --branch volkers-experiments --single-branch https://github.com/simonis/spring-petclinic-rest.git
+WORKDIR spring-petclinic-rest
+RUN JAVA_HOME=/deps/jdk-base mvn -T0.8C clean package
+WORKDIR /deps
+RUN wget --debug https://github.com/CRaC/criu/releases/download/release-1.4/criu-crac-release-1.4.tar.gz
+RUN tar -xzf criu-crac*.tar.gz
 
 FROM base as cds
 COPY --from=deps /deps/jdk /opt/jdk
 # Create CDS archive (this was dropped by jlink)
 RUN /opt/jdk/bin/java -Xshare:dump
-COPY --from=deps /deps/spring-petclinic/target/spring-petclinic-*.jar /opt/jars/
-# Now create AppCDS archive
-RUN nohup bash -c "/opt/jdk/bin/java -showversion -XX:ArchiveClassesAtExit=/opt/jdk/lib/server/app-cds.jsa -jar /opt/jars/spring-petclinic-*.jar &" && sleep 10 && pkill -f spring && sleep 5
+COPY --from=deps /deps/spring-petclinic-rest/target/spring-petclinic-*.jar /opt/jars/
+COPY --from=deps /deps/spring-petclinic-rest/target/dependency /opt/jars/dependency
+# Now create AppCDS archives
+RUN nohup bash -c "/opt/jdk/bin/java -showversion -XX:ArchiveClassesAtExit=/opt/jdk/lib/server/app-cds-shaded.jsa -cp /opt/jars/spring-petclinic-*-shaded.jar org.springframework.samples.petclinic.PetClinicApplication &" && sleep 12 && pkill -f spring && sleep 5
+RUN nohup bash -c "/opt/jdk/bin/java -showversion -XX:ArchiveClassesAtExit=/opt/jdk/lib/server/app-cds-exec.jsa -jar /opt/jars/spring-petclinic-*-exec.jar &" && sleep 12 && pkill -f spring && sleep 5
+# Notice that we can't use full wildcard globbing (like "spring-petclinic*-?.?.?.jar") on the classpath
+RUN nohup bash -c "/opt/jdk/bin/java -showversion -XX:ArchiveClassesAtExit=/opt/jdk/lib/server/app-cds.jsa -cp /opt/jars/dependency/*:`ls /opt/jars/spring-petclinic*-?.?.?.jar` org.springframework.samples.petclinic.PetClinicApplication &" && sleep 12 && pkill -f spring && sleep 5
 
 FROM base
 RUN apt-get install -y iproute2 openssh-server socat vim-tiny --no-install-recommends
@@ -51,11 +57,12 @@ RUN mkdir -p /run/sshd
 
 COPY --from=deps --chown=crac:crac /deps/jdk /opt/jdk
 COPY --from=cds --chown=crac:crac /opt/jdk/lib/server/classes.jsa /opt/jdk/lib/server/
-COPY --from=cds --chown=crac:crac /opt/jdk/lib/server/app-cds.jsa /opt/jars/
-#COPY --from=deps /deps/criu-dist/sbin/criu/criu /opt/jdk/lib/criu/
-#RUN sudo chown root:root /opt/jdk/lib/criu
-#RUN chmod u+s /opt/jdk/lib/criu
-COPY --from=deps --chown=crac:crac /deps/spring-petclinic/target/spring-petclinic-*.jar /opt/jars/
+COPY --from=cds --chown=crac:crac /opt/jdk/lib/server/app-cds*.jsa /opt/jars/
+COPY --from=deps /deps/criu-crac*/sbin/criu /opt/jdk/lib/criu
+RUN chown root:root /opt/jdk/lib/criu
+RUN chmod u+s /opt/jdk/lib/criu
+COPY --from=deps --chown=crac:crac /deps/spring-petclinic-rest/target/spring-petclinic-*.jar /opt/jars/
+COPY --from=deps --chown=crac:crac /deps/spring-petclinic-rest/target/dependency /opt/jars/dependency
 COPY --chown=crac:crac /deps/SuspendResumeAgent.jar /opt/jars/
 COPY --chown=crac:crac /tools/crac_init.sh /opt/tools/
 COPY --chown=crac:crac /tools/ro_init.sh /opt/tools/

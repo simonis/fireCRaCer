@@ -5,7 +5,7 @@ MYPATH=$(dirname $(realpath -s $0))
 DOCKER_IMG="crac.test"
 DOCKER_FILE="$MYPATH/Dockerfile.ubuntu22"
 ROOTFS_FILE="$MYPATH/deps/rootfs.ext4"
-ROOTFS_SIZE="384"
+ROOTFS_SIZE="768"
 CRAC_JDK="https://github.com/CRaC/openjdk-builds/releases/download/17-crac%2B3/openjdk-17-crac+3_linux-x64.tar.gz"
 JATTACH_URL="https://github.com/jattach/jattach/releases/download/v2.1/jattach"
 
@@ -152,7 +152,7 @@ fi
 if [[ ! -f "$MYPATH/deps/UffdVisualizer" ]]; then
   echo "Building deps/UffdVisualizer.jar"
   mkdir -p $MYPATH/deps/UffdVisualizer
-  $MYPATH/deps/jdk/bin/javac --enable-preview --release 17 -d $MYPATH/deps/UffdVisualizer \
+  $MYPATH/deps/jdk/bin/javac -d $MYPATH/deps/UffdVisualizer \
                              $MYPATH/tools/UffdVisualizer/src/io/simonis/UffdVisualizer.java
   unzip $MYPATH/tools/UffdVisualizer/deps/jlfgr-1_0.jar toolbarButtonGraphics/media/* -d $MYPATH/deps/UffdVisualizer
   $MYPATH/deps/jdk/bin/jar -vcfe $MYPATH/deps/UffdVisualizer.jar io.simonis.UffdVisualizer -C $MYPATH/deps/UffdVisualizer .
