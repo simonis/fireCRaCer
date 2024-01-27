@@ -25,6 +25,11 @@ RUN ./jdk-base/bin/jlink --add-modules ALL-MODULE-PATH --output jdk --strip-debu
 RUN git clone --branch volkers-experiments --single-branch https://github.com/simonis/spring-petclinic-rest.git
 WORKDIR spring-petclinic-rest
 RUN JAVA_HOME=/deps/jdk-base mvn -T0.8C clean package
+# Only touch the lines below in order to keep the layer with
+# all the downloaded Maven dependencies cached
+RUN rm -rf * .git* .mvn .editorconfig
+RUN git clone --branch volkers-experiments --single-branch https://github.com/simonis/spring-petclinic-rest.git .
+RUN JAVA_HOME=/deps/jdk-base mvn -T0.8C clean package
 WORKDIR /deps
 RUN wget --debug https://github.com/CRaC/criu/releases/download/release-1.4/criu-crac-release-1.4.tar.gz
 RUN tar -xzf criu-crac*.tar.gz

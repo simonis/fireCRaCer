@@ -7,6 +7,7 @@ RUN apt-get install -y wget bc build-essential libncurses-dev bison flex libssl-
 
 ARG KERNEL=https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.19.8.tar.xz
 ARG KERNEL_CONFIG=https://raw.githubusercontent.com/firecracker-microvm/firecracker/main/resources/guest_configs/microvm-kernel-x86_64-5.10.config
+ARG PATCH_FILE=docker/config.damon.patch
 
 WORKDIR /kernel
 RUN wget --no-check-certificate -O kernel.tar.xz $KERNEL
@@ -17,8 +18,8 @@ RUN wget --no-check-certificate -O KERNEL_CONFIG $KERNEL_CONFIG
 RUN cp KERNEL_CONFIG .config
 RUN make olddefconfig
 # Enable DAMON*, PAGE_IDLE_FLAG, IDLE_PAGE_TRACKING, ANON_VMA_NAME
-COPY /docker/config.damon.patch .
-RUN patch .config < config.damon.patch
+COPY /$PATCH_FILE config.patch
+RUN patch .config < config.patch
 RUN make vmlinux
 
 FROM base

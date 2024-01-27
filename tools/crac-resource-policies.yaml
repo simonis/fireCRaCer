@@ -1,0 +1,5 @@
+# Simple policy which 'ignores' all open sockets
+type: socket
+localAddress: *
+localPort: *
+action: ignore

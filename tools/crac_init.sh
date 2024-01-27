@@ -14,6 +14,6 @@ echo "crac_init.sh: Starting petclinic" > /dev/kmsg
 
 echo_and_exec() { echo "  $@" > /dev/kmsg; "$@" ; }
 
-echo_and_exec /opt/jdk/bin/java -XX:+IgnoreUnrecognizedVMOptions -Dcom.sun.management.jmxremote.port=5555 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -showversion -Dlogging.level.org.apache.catalina.authenticator.AuthenticatorBase=DEBUG $FC_JAVA_OPTIONS -jar /opt/jars/spring-petclinic*.jar
+echo_and_exec /opt/jdk/bin/java -XX:+IgnoreUnrecognizedVMOptions -Dcom.sun.management.jmxremote.port=5555 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -showversion -Dlogging.level.org.springframework.web.filter.CommonsRequestLoggingFilter=DEBUG $FC_JAVA_OPTIONS -jar /opt/jars/spring-petclinic*.jar
 
 exit
