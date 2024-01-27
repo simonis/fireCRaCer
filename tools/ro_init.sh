@@ -80,7 +80,11 @@ do_overlay
 
 # Mount sysfs in case we need more insights int othe kernel
 mount -t sysfs sysfs /sys
-mount -t debugfs debugfs /sys/kernel/debug/
+if [ -d /sys/kernel/debug ]; then
+  mount -t debugfs debugfs /sys/kernel/debug/
+else
+ : # Need to configure kernel with CONFIG_DEBUG_FS=y
+fi
 
 if [[ -n "$sshd" && ( "$sshd" == "true" || "$sshd" == "on" || "$sshd" == "1" ) ]]; then
   # Start ssh daemon for debugging
