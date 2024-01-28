@@ -100,4 +100,17 @@ init_script=${init_script:-'/opt/tools/crac_init.sh'}
 echo "Successfully overlayed read-only rootfs with /dev/$overlay_root" > /dev/kmsg
 echo "Now starting $init_script $@" > /dev/kmsg
 
-exec $init_script $@
+# Required to get correct line wrap in bash
+TERM=ansi
+
+# If we use a simple 'exec' here, we wont have "job control" in the spawned process:
+#   bash: cannot set terminal process group (-1): Inappropriate ioctl for device
+#   bash: no job control in this shell
+# We have to make the spawned process a process group leader and assign it a terminal.
+# See e.g. https://www.linux.it/~rubini/docs/init/init.html
+# or https://www.busybox.net/FAQ.html#job_control
+#
+# This can be achieved with the help of the 'setsid' utility:
+# https://github.com/util-linux/util-linux/blob/master/sys-utils/setsid.c
+
+/usr/bin/setsid -c $init_script $@
