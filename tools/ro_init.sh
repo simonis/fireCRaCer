@@ -86,13 +86,15 @@ else
  : # Need to configure kernel with CONFIG_DEBUG_FS=y
 fi
 
+export PATH=/opt/tools:/opt/jdk/bin:$PATH
+
 if [[ -n "$sshd" && ( "$sshd" == "true" || "$sshd" == "on" || "$sshd" == "1" ) ]]; then
   # Start ssh daemon for debugging
   echo "Starting ssh daemon" > /dev/kmsg
   # Also mount the devpts file system such that sshd can assign pseudo terminals (PTYs).
   mkdir -p /dev/pts
   mount -t devpts devpts /dev/pts
-  /sbin/sshd
+  /sbin/sshd -o "SetEnv=PATH=$PATH"
 fi
 
 init_script=${init_script:-'/opt/tools/crac_init.sh'}

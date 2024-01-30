@@ -477,6 +477,11 @@ if [ -z "$TEMPFS_SIZE" ]; then
     TEMPFS_SIZE="128m"
 fi
 
+if [ ! -z "$FC_JAVA_OPTIONS" ]; then
+  BOOT_ARGS="$BOOT_ARGS FC_JAVA_OPTIONS=\"$FC_JAVA_OPTIONS\""
+fi
+
+
 # Disable i8042 device probing to save some time
 # See: https://github.com/firecracker-microvm/firecracker/blob/main/docs/api_requests/actions.md
 DISABLE_I8042="i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd"
