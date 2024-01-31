@@ -120,6 +120,7 @@ while getopts 'lmbdqpt:s:r:n:i:ukh?' opt; do
       echo " -s: snapshot Firecracker on tap device 'tap<tap>' (default 'tap0') to <snapshot-dir>."
       echo "     If <snapshot-dir> doesn't exist, it will be created."
       echo "     SNAPSHOT_TYPE (defaults to 'Diff') determines the snapshot type (i.e. 'Full' or 'Diff')."
+      echo "     SNAPSHOT_FALLOCATE (defaults to 'true') controls if the snapshot will be made sparse."
       echo ""
       echo " -r: restore Firecracker snapshotted on tap device'tap<tap>' (default 'tap0') from <snapshot-dir>."
       echo " -u: run with a userfaultfd memory backend and redirect its output to <log-file>"
@@ -325,6 +326,11 @@ if [[ -v SNAPSHOT ]]; then
   # Don't use an explicit snapshot version to run with every release of Firecracker
   #                \"version\": \"1.0.0\" }")
   check_http_response $ret "204" "Snapshot" "no"
+  # Make the image file sparse
+  SNAPSHOT_FALLOCATE=${SNAPSHOT_FALLOCATE:-"true"}
+  if [[ "$SNAPSHOT_FALLOCATE" == "true" && "$(which fallocate)" != "" ]]; then
+    fallocate -d $SNAPSHOT/mem_file
+  fi
   # Resume
   ret=$(curl --write-out '%{http_code}' \
              --silent \
