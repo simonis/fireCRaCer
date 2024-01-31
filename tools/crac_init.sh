@@ -32,4 +32,10 @@ fi
 
 echo_and_exec /opt/jdk/bin/java -XX:+IgnoreUnrecognizedVMOptions -Dcom.sun.management.jmxremote.port=5555 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -showversion -Dlogging.level.org.springframework.web.filter.CommonsRequestLoggingFilter=DEBUG $FC_JAVA_OPTIONS $FC_JAVA_CMD $FC_JAVA_ARGS
 
+echo "Exiting.." > /dev/kmsg
+# Gracefully shutdown instead of exiting the init process to avoid a kernel panic on exit
+# See: https://en.wikipedia.org/wiki/Magic_SysRq_key
+echo b > /proc/sysrq-trigger
+
+sleep 3
 exit

@@ -77,7 +77,9 @@ COPY --from=tools --chown=crac:crac /tools/virt2phys /opt/tools/
 COPY --from=tools --chown=crac:crac /tools/fc_log_timestamp /opt/tools/
 COPY --from=tools --chown=crac:crac /tools/kill /opt/tools/
 COPY --chown=crac:crac /deps/jattach /opt/tools/
-COPY  /tools/.bashrc /
+COPY  /tools/.bashrc /root/.bashrc.tmp
+RUN cat /root/.bashrc.tmp >> /root/.bashrc
+RUN rm /root/.bashrc.tmp
 COPY  /tools/crac-resource-policies.yaml /opt/tools/crac-resource-policies.yaml
 
 # The following two directories are required in order to mount this root file system
